@@ -12,7 +12,7 @@ from agents.simple_chat_agent import SimpleChatAgent
 from agents.notification_agent import NotificationAgent
 from utils.logger import setup_logger
 from utils.message_logger import setup_message_logger, log_received_message
-from utils.cli_panel import CLIPanel
+from utils.cli_manager import CLIManager
 
 
 async def main():
@@ -107,17 +107,19 @@ async def main():
     logger.success("所有组件初始化完成")
     logger.info("开始监听消息...")
 
-    # 创建 CLI 面板
-    cli_panel = None
+    # 创建 CLI 界面
+    cli_manager = None
     cli_task = None
+
     if CLI_PANEL_CONFIG.get("enabled", True):
-        cli_panel = CLIPanel(
+        cli_mode = CLI_PANEL_CONFIG.get("mode", "interactive")
+        cli_manager = CLIManager(
             agent_manager,
+            mode=cli_mode,
             refresh_rate=CLI_PANEL_CONFIG.get("refresh_rate", 1)
         )
-        # 启动 CLI 面板（异步任务）
-        cli_task = asyncio.create_task(cli_panel.run())
-        logger.info("CLI 控制面板已启动")
+        cli_task = asyncio.create_task(cli_manager.run())
+        logger.info(f"CLI 已启动（模式: {cli_mode}）")
 
     # 监听消息循环
     try:
@@ -153,9 +155,9 @@ async def main():
         # 清理资源
         logger.info("正在关闭...")
 
-        # 停止 CLI 面板
-        if cli_panel:
-            cli_panel.stop()
+        # 停止 CLI
+        if cli_manager:
+            cli_manager.stop()
         if cli_task:
             cli_task.cancel()
             try:

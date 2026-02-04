@@ -97,7 +97,8 @@ SUPERVISOR_CONFIG = {
 
 # CLI 面板配置
 CLI_PANEL_CONFIG = {
-    "enabled": True,  # 是否启用 CLI 面板
-    "refresh_rate": 1,  # 刷新频率（秒）
-    "show_stats": True,  # 是否显示统计信息
+    "enabled": True,          # 是否启用 CLI
+    "mode": "interactive",    # 模式：interactive（交互式）/ panel（仅面板）/ command（仅命令）
+    "refresh_rate": 1,        # 刷新频率（秒），仅 panel 和 interactive 模式有效
+    "show_stats": True,       # 是否显示统计信息
 }
