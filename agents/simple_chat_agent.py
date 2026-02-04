@@ -1,32 +1,36 @@
 """简单的 LangGraph 聊天 Agent"""
 from typing import Optional
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from loguru import logger
+from config.bot_config import MODEL_ID, AGENT_SYSTEM_PROMPT
 
 
 class SimpleChatAgent:
     """简单的聊天 Agent，使用 LangGraph 管理对话状态"""
 
-    def __init__(self, api_key: str, base_url: str, model: str = "deepseek-v3.2"):
+    def __init__(self, api_key: str, base_url: str, model: str = None, system_prompt: str = None):
         """
         初始化 Agent
 
         Args:
             api_key: OpenAI API Key
             base_url: API Base URL
-            model: 模型名称
+            model: 模型名称（如果不指定，使用配置文件中的 MODEL_ID）
+            system_prompt: 系统提示词（如果不指定，使用配置文件中的 AGENT_SYSTEM_PROMPT）
         """
         self.api_key = api_key
         self.base_url = base_url
-        self.model = model
+        self.model = model or MODEL_ID
+        self.system_prompt = system_prompt or AGENT_SYSTEM_PROMPT
 
         # 初始化 LLM
         self.llm = ChatOpenAI(
             api_key=api_key,
             base_url=base_url,
-            model=model,
+            model=self.model,
             temperature=0.7
         )
 
@@ -36,7 +40,8 @@ class SimpleChatAgent:
         # 构建 LangGraph
         self.graph = self._build_graph()
 
-        logger.info(f"SimpleChatAgent 初始化完成，模型: {model}")
+        logger.info(f"SimpleChatAgent 初始化完成，模型: {self.model}")
+        logger.debug(f"系统提示词: {self.system_prompt[:50]}...")
 
     def _build_graph(self):
         """构建 LangGraph 工作流"""
@@ -67,8 +72,15 @@ class SimpleChatAgent:
             更新后的状态
         """
         try:
+            # 构建消息列表，添加系统提示词
+            messages = state["messages"]
+
+            # 如果是第一条消息，添加系统提示词
+            if len(messages) == 1:
+                messages = [SystemMessage(content=self.system_prompt)] + messages
+
             # 调用 LLM
-            response = self.llm.invoke(state["messages"])
+            response = self.llm.invoke(messages)
             return {"messages": [response]}
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")

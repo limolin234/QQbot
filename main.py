@@ -10,6 +10,7 @@ from core.message_filter import MessageFilter
 from core.message_handler import MessageHandler
 from agents.simple_chat_agent import SimpleChatAgent
 from utils.logger import setup_logger
+from utils.message_logger import setup_message_logger
 
 
 async def main():
@@ -19,6 +20,9 @@ async def main():
 
     # 设置日志
     setup_logger()
+
+    # 设置消息处理日志（必须在 setup_logger 之后）
+    setup_message_logger()
 
     logger.info("=" * 50)
     logger.info("QQ Bot 启动中...")
