@@ -1,72 +1,76 @@
 # 配置说明文档
 
-本文档详细说明了 QQ Bot 的所有可配置参数。
+本文档详细说明 QQ Bot 多 Agent 系统的所有配置选项。
 
-## 📁 配置文件位置
+## 📁 配置文件概览
 
-### 1. `.env` - 环境变量配置
-存放敏感信息（API Key 等）
-
-### 2. `config/bot_config.py` - Bot 行为配置
-存放 Bot 的行为参数、模型配置、群号等
-
-### 3. `config/napcat_config.py` - NapCat 连接配置
-存放 NapCat WebSocket 连接地址
+| 文件 | 用途 | 说明 |
+|------|------|------|
+| `.env` | 环境变量 | API Key 等敏感信息 |
+| `config/napcat_config.py` | NapCat 连接 | WebSocket 地址配置 |
+| `config/bot_config.py` | Bot 基础配置 | 模型、安全限制等 |
+| `config/agents_config.py` | Agent 配置 | 所有 Agent 的配置 |
 
 ---
 
-## 🔧 详细配置说明
+## 1. 环境变量配置 (`.env`)
 
-### 一、环境变量配置 (`.env`)
+### 必需配置
 
 ```env
 # LLM API 配置
-YUNWU_API_KEY = sk-xxx...
-API_BASE_URL = https://yunwu.ai/v1
+YUNWU_API_KEY=sk-xxx...
+API_BASE_URL=https://yunwu.ai/v1
 ```
 
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `YUNWU_API_KEY` | LLM API 密钥 | `sk-TplxUzAgXpma6pUb...` |
-| `API_BASE_URL` | LLM API 基础地址 | `https://yunwu.ai/v1` |
+### 配置说明
 
-**注意**：
-- 不需要配置 NapCat 相关的 Token
-- 支持任何 OpenAI Compatible API
+| 变量名 | 说明 | 示例 |
+|--------|------|------|
+| `YUNWU_API_KEY` | OpenAI 兼容 API 的密钥 | `sk-xxx...` |
+| `API_BASE_URL` | API 基础 URL | `https://yunwu.ai/v1` |
+
+### 支持的 API 提供商
+
+- **Yunwu AI**: `https://yunwu.ai/v1`
+- **DeepSeek**: `https://api.deepseek.com/v1`
+- **OpenAI**: `https://api.openai.com/v1`
+- 其他 OpenAI 兼容 API
 
 ---
 
-### 二、Bot 行为配置 (`config/bot_config.py`)
+## 2. NapCat 连接配置 (`config/napcat_config.py`)
 
-#### 2.1 基础配置
+```python
+# WebSocket 服务端地址
+NAPCAT_WS_URL = "ws://127.0.0.1:3001"
+
+# HTTP API 地址（可选，暂未使用）
+NAPCAT_HTTP_URL = "http://127.0.0.1:3000"
+```
+
+### 配置说明
+
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `NAPCAT_WS_URL` | WebSocket 服务端地址 | `ws://127.0.0.1:3001` |
+| `NAPCAT_HTTP_URL` | HTTP API 地址 | `http://127.0.0.1:3000` |
+
+**注意**：
+- 端口 `3001` 是 OneBot 协议端口，不是 WebUI 端口（6099）
+- 本地连接无需 Token 认证
+
+---
+
+## 3. Bot 基础配置 (`config/bot_config.py`)
 
 ```python
 # 监听的群号列表
 MONITORED_GROUPS = [1075786046]
 
-# Bot QQ 号（可选，如果不设置会自动获取）
+# Bot QQ 号（自动获取，无需手动配置）
 BOT_QQ = None
-```
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `MONITORED_GROUPS` | `list[int]` | 要监听的 QQ 群号列表 | `[1075786046]` |
-| `BOT_QQ` | `int` or `None` | Bot 的 QQ 号（可选） | `None`（自动获取） |
-
-**如何修改**：
-```python
-# 监听多个群
-MONITORED_GROUPS = [1075786046, 123456789, 987654321]
-
-# 手动指定 Bot QQ 号（通常不需要）
-BOT_QQ = 3014249817
-```
-
----
-
-#### 2.2 Agent 配置
-
-```python
 # LLM 模型 ID
 MODEL_ID = "deepseek-v3"
 
@@ -80,239 +84,434 @@ AGENT_SYSTEM_PROMPT = """你是一个友好、乐于助人的 QQ 群助手。
 - 遇到不确定的问题会诚实地说不知道
 
 请用中文回复，保持友好和专业。"""
-```
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `MODEL_ID` | `str` | LLM 模型 ID | `"deepseek-v3"` |
-| `AGENT_SYSTEM_PROMPT` | `str` | Agent 的系统提示词 | 见上方 |
-
-**如何修改**：
-
-**修改模型**：
-```python
-# 使用 GPT-4
-MODEL_ID = "gpt-4"
-
-# 使用 DeepSeek V3
-MODEL_ID = "deepseek-v3"
-
-# 使用其他模型
-MODEL_ID = "your-model-name"
-```
-
-**修改系统提示词**：
-```python
-# 专业助手
-AGENT_SYSTEM_PROMPT = """你是一个专业的技术助手，擅长编程和技术问题。
-回答要准确、详细，提供代码示例。"""
-
-# 幽默助手
-AGENT_SYSTEM_PROMPT = """你是一个幽默风趣的群聊助手。
-回答要轻松有趣，适当使用表情和网络用语。"""
-
-# 特定领域助手
-AGENT_SYSTEM_PROMPT = """你是一个 Python 编程助手。
-专注于回答 Python 相关问题，提供代码示例和最佳实践。"""
-```
-
----
-
-#### 2.3 唤醒配置
-
-```python
-# 唤醒关键词（正则表达式）
+# 唤醒关键词（支持正则表达式）
 WAKE_WORDS = [
     r"小助手",
     r"bot",
     r"机器人",
     r"助手"
 ]
+
+# 安全配置
+MAX_MESSAGE_LENGTH = 500          # 最大消息长度（字符）
+MAX_MESSAGES_PER_MINUTE = 10      # 每分钟最大消息数
+VIOLATION_THRESHOLD = 3           # 违规阈值（超过后暂停响应）
 ```
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `WAKE_WORDS` | `list[str]` | 唤醒关键词列表（支持正则） | 见上方 |
+### 配置说明
 
-**如何修改**：
-```python
-# 添加更多唤醒词
-WAKE_WORDS = [
-    r"小助手",
-    r"bot",
-    r"机器人",
-    r"助手",
-    r"AI",
-    r"智能助手",
-    r"帮我"
-]
+#### 基础配置
 
-# 使用正则表达式（更灵活）
-WAKE_WORDS = [
-    r"小助手",
-    r"bot|机器人|助手",  # 匹配任意一个
-    r"帮我.*",  # 匹配"帮我"开头的任何内容
-]
-```
+| 变量名 | 说明 | 类型 | 默认值 |
+|--------|------|------|--------|
+| `MONITORED_GROUPS` | 监听的群号列表 | `List[int]` | `[1075786046]` |
+| `BOT_QQ` | Bot QQ 号 | `int` | 自动获取 |
 
-**注意**：
-- 支持 Python 正则表达式语法
-- 除了关键词，@ bot 也会触发响应
+#### Agent 配置
+
+| 变量名 | 说明 | 类型 | 默认值 |
+|--------|------|------|--------|
+| `MODEL_ID` | LLM 模型 ID | `str` | `"deepseek-v3"` |
+| `AGENT_SYSTEM_PROMPT` | 系统提示词 | `str` | 见上方 |
+
+#### 唤醒配置
+
+| 变量名 | 说明 | 类型 | 默认值 |
+|--------|------|------|--------|
+| `WAKE_WORDS` | 唤醒关键词列表 | `List[str]` | 见上方 |
+
+**注意**：关键词支持正则表达式，如 `r"小助手"` 会匹配包含"小助手"的消息。
+
+#### 安全配置
+
+| 变量名 | 说明 | 类型 | 默认值 |
+|--------|------|------|--------|
+| `MAX_MESSAGE_LENGTH` | 最大消息长度 | `int` | `500` |
+| `MAX_MESSAGES_PER_MINUTE` | 每分钟最大消息数 | `int` | `10` |
+| `VIOLATION_THRESHOLD` | 违规阈值 | `int` | `3` |
 
 ---
 
-#### 2.4 安全配置
+## 4. Agent 配置 (`config/agents_config.py`)
+
+### 4.1 Agent 配置结构
 
 ```python
-# 最大消息长度（字符）
-MAX_MESSAGE_LENGTH = 500
-
-# 每分钟最大消息数
-MAX_MESSAGES_PER_MINUTE = 10
-
-# 违规次数阈值（超过此次数将暂停服务）
-VIOLATION_THRESHOLD = 3
+AGENTS_CONFIG = {
+    "agent_id": {
+        "enabled": True,              # 是否启用
+        "name": "Agent 名称",         # 显示名称
+        "description": "Agent 描述",  # 功能描述
+        "class": "AgentClassName",    # Agent 类名
+        "config": {
+            # Agent 特定配置
+        }
+    }
+}
 ```
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `MAX_MESSAGE_LENGTH` | `int` | 单条消息最大字符数 | `500` |
-| `MAX_MESSAGES_PER_MINUTE` | `int` | 每分钟最多发送消息数 | `10` |
-| `VIOLATION_THRESHOLD` | `int` | 违规次数阈值 | `3` |
+### 4.2 SimpleChatAgent 配置
 
-**如何修改**：
 ```python
-# 允许更长的消息
-MAX_MESSAGE_LENGTH = 1000
-
-# 提高发送频率（谨慎调整）
-MAX_MESSAGES_PER_MINUTE = 20
-
-# 更严格的违规处理
-VIOLATION_THRESHOLD = 2
+"simple_chat": {
+    "enabled": True,
+    "name": "聊天助手",
+    "description": "友好的群聊助手，回答问题和闲聊",
+    "class": "SimpleChatAgent",
+    "config": {
+        "model": "deepseek-v3",
+        "system_prompt": "你是一个友好的群助手...",
+        "monitored_groups": [1075786046],
+        "trigger_mode": "hybrid",
+        "wake_words": [r"小助手", r"bot", r"机器人"],
+        "require_at": False
+    }
+}
 ```
 
-**安全机制说明**：
-1. 消息长度超过 `MAX_MESSAGE_LENGTH` 时不会发送
-2. 每分钟发送超过 `MAX_MESSAGES_PER_MINUTE` 条时不会发送
-3. 累计违规达到 `VIOLATION_THRESHOLD` 次后，该群服务将被暂停
+#### 配置项说明
+
+| 配置项 | 说明 | 类型 | 默认值 | 必需 |
+|--------|------|------|--------|------|
+| `model` | LLM 模型 ID | `str` | `"deepseek-v3"` | ✅ |
+| `system_prompt` | 系统提示词 | `str` | - | ✅ |
+| `monitored_groups` | 监听的群号列表 | `List[int]` | `[]` | ✅ |
+| `trigger_mode` | 触发模式 | `str` | `"hybrid"` | ✅ |
+| `wake_words` | 唤醒关键词 | `List[str]` | `[]` | ❌ |
+| `require_at` | 是否必须 @ | `bool` | `False` | ❌ |
+
+#### 触发模式说明
+
+| 模式 | 说明 | API 消耗 | 适用场景 |
+|------|------|---------|---------|
+| `all` | 监听所有消息 | 高 | 低频群 |
+| `keywords` | 仅关键词触发 | 低 | 节省成本 |
+| `hybrid` | 关键词 + LLM 分析 | 中 | 聊天群（推荐） |
+
+### 4.3 NotificationAgent 配置
+
+```python
+"notification": {
+    "enabled": True,
+    "name": "通知摘要助手",
+    "description": "识别重要通知并发送私聊摘要",
+    "class": "NotificationAgent",
+    "config": {
+        "model": "deepseek-v3",
+        "monitored_groups": [123456789],
+        "target_user": 987654321,
+        "trigger_mode": "all",
+        "keywords": [],
+        "notification_prompt": "...",
+        "summary_prompt": "..."
+    }
+}
+```
+
+#### 配置项说明
+
+| 配置项 | 说明 | 类型 | 默认值 | 必需 |
+|--------|------|------|--------|------|
+| `model` | LLM 模型 ID | `str` | `"deepseek-v3"` | ✅ |
+| `monitored_groups` | 监听的群号列表 | `List[int]` | `[]` | ✅ |
+| `target_user` | 接收摘要的 QQ 号 | `int` | - | ✅ |
+| `trigger_mode` | 触发模式 | `str` | `"all"` | ✅ |
+| `keywords` | 关键词列表 | `List[str]` | `[]` | ❌ |
+| `notification_prompt` | 通知识别提示词 | `str` | - | ✅ |
+| `summary_prompt` | 摘要生成提示词 | `str` | - | ❌ |
+
+#### 通知识别提示词示例
+
+```python
+notification_prompt = """你是一个通知识别助手。判断以下消息是否为重要通知。
+
+重要通知包括：
+- 作业通知（布置作业、作业截止日期）
+- 考试安排（考试时间、地点、科目）
+- 课程变更（调课、停课、补课）
+- 重要活动通知（讲座、会议、活动）
+- 截止日期提醒（报名、提交材料等）
+- 成绩公布
+- 学校通知
+
+不重要的消息：
+- 日常闲聊
+- 问候语
+- 无关紧要的讨论
+
+请分析以下消息，返回 JSON 格式：
+- 如果是重要通知：{"is_important": true, "category": "通知类别", "summary": "简洁的摘要（50字以内）", "key_info": "关键信息（时间、地点等）"}
+- 如果不是：{"is_important": false}
+
+消息内容：{message}"""
+```
+
+### 4.4 CLI 面板配置
+
+```python
+CLI_PANEL_CONFIG = {
+    "enabled": True,      # 是否启用 CLI 面板
+    "refresh_rate": 1,    # 刷新频率（秒）
+    "show_stats": True    # 是否显示统计信息
+}
+```
+
+#### 配置项说明
+
+| 配置项 | 说明 | 类型 | 默认值 |
+|--------|------|------|--------|
+| `enabled` | 是否启用 CLI 面板 | `bool` | `True` |
+| `refresh_rate` | 刷新频率（秒） | `float` | `1` |
+| `show_stats` | 是否显示统计信息 | `bool` | `True` |
 
 ---
 
-### 三、NapCat 连接配置 (`config/napcat_config.py`)
+## 5. 配置示例
+
+### 5.1 单 Agent 配置（仅聊天助手）
 
 ```python
-# WebSocket 服务端地址（正向 WS）
-NAPCAT_WS_URL = "ws://127.0.0.1:3001"
-
-# HTTP API 地址（可选）
-NAPCAT_HTTP_URL = "http://127.0.0.1:3000"
+AGENTS_CONFIG = {
+    "simple_chat": {
+        "enabled": True,
+        "name": "聊天助手",
+        "class": "SimpleChatAgent",
+        "config": {
+            "model": "deepseek-v3",
+            "monitored_groups": [1075786046],
+            "trigger_mode": "hybrid",
+            "wake_words": [r"小助手", r"bot"],
+            "require_at": False,
+            "system_prompt": "你是一个友好的群助手..."
+        }
+    }
+}
 ```
 
-| 参数 | 类型 | 说明 | 默认值 |
-|------|------|------|--------|
-| `NAPCAT_WS_URL` | `str` | WebSocket 连接地址 | `"ws://127.0.0.1:3001"` |
-| `NAPCAT_HTTP_URL` | `str` | HTTP API 地址 | `"http://127.0.0.1:3000"` |
+### 5.2 多 Agent 配置（聊天 + 通知）
 
-**如何修改**：
 ```python
-# 修改端口（如果在 NapCat WebUI 中修改了端口）
-NAPCAT_WS_URL = "ws://127.0.0.1:8080"
+AGENTS_CONFIG = {
+    "simple_chat": {
+        "enabled": True,
+        "name": "聊天助手",
+        "class": "SimpleChatAgent",
+        "config": {
+            "model": "deepseek-v3",
+            "monitored_groups": [1075786046],  # 聊天群
+            "trigger_mode": "hybrid",
+            "wake_words": [r"小助手", r"bot"],
+            "require_at": False,
+            "system_prompt": "你是一个友好的群助手..."
+        }
+    },
+    "notification": {
+        "enabled": True,
+        "name": "通知摘要助手",
+        "class": "NotificationAgent",
+        "config": {
+            "model": "deepseek-v3",
+            "monitored_groups": [123456789],  # 通知群
+            "target_user": 987654321,  # 你的大号 QQ
+            "trigger_mode": "all",
+            "notification_prompt": "..."
+        }
+    }
+}
+```
 
-# 远程连接（不推荐，有安全风险）
-NAPCAT_WS_URL = "ws://192.168.1.100:3001"
+### 5.3 禁用 Agent
+
+```python
+"notification": {
+    "enabled": False,  # 禁用此 Agent
+    # ... 其他配置
+}
 ```
 
 ---
 
-## 🎯 常见配置场景
+## 6. 常见配置场景
 
-### 场景 1：监听多个群
+### 场景 1：只在特定群响应
 
 ```python
-# config/bot_config.py
-MONITORED_GROUPS = [
-    1075786046,  # 测试群
-    123456789,   # 工作群
-    987654321    # 学习群
-]
+"monitored_groups": [1075786046, 123456789]
 ```
 
-### 场景 2：使用不同的 LLM
+### 场景 2：必须 @ 才响应
 
 ```python
-# config/bot_config.py
-MODEL_ID = "gpt-4o-mini"  # 使用 GPT-4o-mini
-
-# .env
-API_BASE_URL = https://api.openai.com/v1
-YUNWU_API_KEY = sk-xxx...  # OpenAI API Key
+"require_at": True
 ```
 
-### 场景 3：自定义 Bot 人格
+### 场景 3：节省 API 调用（仅关键词触发）
 
 ```python
-# config/bot_config.py
-AGENT_SYSTEM_PROMPT = """你是一个二次元风格的可爱助手，名叫小樱。
-
-你的特点：
-- 说话可爱，喜欢用"呢"、"哦"等语气词
-- 偶尔使用颜文字 (๑•̀ㅂ•́)و✧
-- 对技术问题很专业，但表达方式轻松活泼
-- 记得用户的名字，像朋友一样交流
-
-请用中文回复，保持可爱和专业的平衡～"""
+"trigger_mode": "keywords",
+"wake_words": [r"小助手", r"bot", r"帮助"]
 ```
 
-### 场景 4：严格的安全限制
+### 场景 4：多个通知群
 
 ```python
-# config/bot_config.py
-MAX_MESSAGE_LENGTH = 300  # 更短的消息
-MAX_MESSAGES_PER_MINUTE = 5  # 更低的频率
-VIOLATION_THRESHOLD = 1  # 一次违规就暂停
+"notification": {
+    "config": {
+        "monitored_groups": [111111, 222222, 333333],
+        "target_user": 987654321
+    }
+}
+```
+
+### 场景 5：不同群使用不同 Agent
+
+创建多个 SimpleChatAgent：
+
+```python
+"chat_group_1": {
+    "enabled": True,
+    "name": "群1助手",
+    "class": "SimpleChatAgent",
+    "config": {
+        "monitored_groups": [1075786046],
+        "system_prompt": "你是群1的助手..."
+    }
+},
+"chat_group_2": {
+    "enabled": True,
+    "name": "群2助手",
+    "class": "SimpleChatAgent",
+    "config": {
+        "monitored_groups": [123456789],
+        "system_prompt": "你是群2的助手..."
+    }
+}
 ```
 
 ---
 
-## 📝 配置修改后的操作
+## 7. 配置验证
 
-修改配置后需要：
+### 启动时检查
 
-1. **重启 Bot**：
-   ```bash
-   # 停止 Bot (Ctrl+C)
-   # 重新启动
-   python main.py
-   ```
+Bot 启动时会自动验证配置：
 
-2. **检查日志**：
-   ```bash
-   tail -f logs/bot.log
-   ```
+- ✅ 检查必需的环境变量
+- ✅ 检查 NapCat 连接
+- ✅ 检查 Agent 配置完整性
+- ✅ 检查群号格式
 
-3. **测试功能**：
-   - 在群中发送测试消息
-   - 检查 Bot 是否正常响应
+### 常见配置错误
 
----
-
-## ⚠️ 注意事项
-
-1. **不要泄露 API Key**：`.env` 文件已在 `.gitignore` 中，不会被提交到 Git
-2. **谨慎调整安全参数**：过高的频率可能导致账号风险
-3. **系统提示词很重要**：它决定了 Bot 的行为和风格
-4. **正则表达式要测试**：错误的正则可能导致无法唤醒或误触发
+| 错误 | 原因 | 解决方案 |
+|------|------|---------|
+| `请在 .env 文件中配置 API Key` | 缺少环境变量 | 创建 `.env` 文件并填写 |
+| `无法连接到 NapCat` | NapCat 未运行或配置错误 | 检查 NapCat 和端口配置 |
+| `未知的 Agent 类型` | Agent 类名错误 | 检查 `class` 字段 |
+| `Agent 不响应` | 群号或触发条件配置错误 | 检查 `monitored_groups` 和 `trigger_mode` |
 
 ---
 
-## 🔍 配置验证
+## 8. 高级配置
 
-启动 Bot 时会显示当前配置：
+### 8.1 自定义模型参数
 
+```python
+"config": {
+    "model": "deepseek-v3",
+    "temperature": 0.7,  # 需要修改 Agent 代码支持
+    "max_tokens": 500
+}
 ```
-2026-02-04 15:57:17 | INFO | SimpleChatAgent 初始化完成，模型: deepseek-v3
-2026-02-04 15:57:17 | DEBUG | 系统提示词: 你是一个友好、乐于助人的 QQ 群助手...
+
+### 8.2 多语言支持
+
+```python
+"system_prompt": """You are a friendly assistant.
+Respond in English."""
 ```
 
-检查这些信息确认配置是否正确。
+### 8.3 自定义日志级别
+
+在 `utils/logger.py` 中修改：
+
+```python
+setup_logger(level="DEBUG")  # INFO, DEBUG, WARNING, ERROR
+```
+
+---
+
+## 9. 配置最佳实践
+
+### ✅ 推荐做法
+
+1. **分离敏感信息**：API Key 放在 `.env` 中
+2. **使用描述性名称**：Agent 名称清晰易懂
+3. **合理设置触发模式**：根据群活跃度选择
+4. **定期备份配置**：保存配置文件副本
+5. **测试后再启用**：新 Agent 先在测试群测试
+
+### ❌ 避免做法
+
+1. **不要硬编码 API Key**：使用环境变量
+2. **不要监听所有群**：只监听需要的群
+3. **不要使用过于宽泛的关键词**：避免误触发
+4. **不要忽略日志**：定期检查日志文件
+5. **不要在生产环境直接修改**：先在测试环境验证
+
+---
+
+## 10. 配置更新
+
+### 热更新（不支持）
+
+当前版本不支持热更新配置，修改配置后需要重启 Bot：
+
+```bash
+# 停止 Bot (Ctrl+C)
+# 修改配置文件
+# 重新启动
+python main.py
+```
+
+### 未来计划
+
+- [ ] 支持配置热重载
+- [ ] Web 配置界面
+- [ ] 配置验证工具
+- [ ] 配置导入/导出
+
+---
+
+## 11. 故障排查
+
+### 配置相关问题
+
+1. **Bot 不响应**
+   - 检查 `monitored_groups` 是否包含目标群
+   - 检查 `enabled` 是否为 `True`
+   - 检查触发条件（@ 或关键词）
+
+2. **Agent 未加载**
+   - 查看启动日志中的 Agent 加载信息
+   - 检查 `class` 字段是否正确
+   - 检查是否有语法错误
+
+3. **私聊消息发送失败**
+   - 确认 `target_user` 配置正确
+   - 检查 Bot 是否与目标用户是好友
+   - 查看 NapCat 日志
+
+---
+
+## 12. 参考资料
+
+- [README.md](README.md) - 项目说明
+- [LangGraph 文档](https://langchain-ai.github.io/langgraph/)
+- [NapCat 文档](https://napneko.github.io/)
+- [OneBot 11 协议](https://github.com/botuniverse/onebot-11)
+
+---
+
+**最后更新**：2026-02-04

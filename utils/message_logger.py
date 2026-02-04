@@ -37,26 +37,34 @@ def log_received_message(group_id: int, user_id: int, user_name: str, message: s
     )
 
 
-def log_agent_processing(group_id: int, user_id: int, message: str):
+def log_agent_processing(group_id: int, user_id: int, message: str, agent_name: str = "Agent"):
     """记录 Agent 开始处理"""
     message_logger.info(
-        f"🤖 Agent处理中 | 群:{group_id} | 用户:{user_id} | 消息:{message[:50]}"
+        f"🤖 [{agent_name}] 处理中 | 群:{group_id} | 用户:{user_id} | 消息:{message[:50]}"
     )
 
 
-def log_agent_response(group_id: int, user_id: int, response: str):
+def log_agent_response(group_id: int, user_id: int, response: str, agent_name: str = "Agent"):
     """记录 Agent 生成的回复"""
     message_logger.info(
-        f"💬 Agent回复 | 群:{group_id} | 用户:{user_id} | 回复:{response[:100]}"
+        f"💬 [{agent_name}] 回复 | 群:{group_id} | 用户:{user_id} | 回复:{response[:100]}"
     )
 
 
-def log_message_sent(group_id: int, success: bool):
+def log_message_sent(group_id: int, success: bool, agent_name: str = "Agent"):
     """记录消息发送结果"""
     if success:
-        message_logger.success(f"✅ 消息已发送 | 群:{group_id}")
+        message_logger.success(f"✅ [{agent_name}] 消息已发送 | 群:{group_id}")
     else:
-        message_logger.error(f"❌ 消息发送失败 | 群:{group_id}")
+        message_logger.error(f"❌ [{agent_name}] 消息发送失败 | 群:{group_id}")
+
+
+def log_private_message_sent(user_id: int, success: bool, agent_name: str = "Agent"):
+    """记录私聊消息发送结果"""
+    if success:
+        message_logger.success(f"📤 [{agent_name}] 私聊消息已发送 | 用户:{user_id}")
+    else:
+        message_logger.error(f"❌ [{agent_name}] 私聊消息发送失败 | 用户:{user_id}")
 
 
 def log_security_block(group_id: int, reason: str):

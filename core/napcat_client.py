@@ -187,6 +187,34 @@ class NapCatClient:
             logger.error(f"发送群消息异常: {e}")
             return False
 
+    async def send_private_msg(self, user_id: int, message: str) -> bool:
+        """
+        发送私聊消息
+
+        Args:
+            user_id: 接收者 QQ 号
+            message: 消息内容
+
+        Returns:
+            True 如果发送成功
+        """
+        try:
+            result = await self.call_api("send_private_msg", {
+                "user_id": user_id,
+                "message": message
+            })
+
+            if result:
+                logger.info(f"私聊消息发送成功 -> 用户 {user_id}: {message[:50]}")
+                return True
+            else:
+                logger.error(f"私聊消息发送失败 -> 用户 {user_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"发送私聊消息异常: {e}")
+            return False
+
     async def listen(self) -> AsyncIterator[Dict[str, Any]]:
         """
         监听消息事件
