@@ -4,6 +4,7 @@
 __pycache__/
 **/__pycache__/
 
+napcat/
 logs/bot.log
 logs/message_handler.log
 

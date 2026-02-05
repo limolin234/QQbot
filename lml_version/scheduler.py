@@ -1,4 +1,4 @@
-import asyncio,heapq
+import asyncio,heapq,re
 from enum import IntEnum
 from ncatbot.core import GroupMessage
 from time import time
@@ -89,17 +89,29 @@ class MessageScheduler:#异步优先级任务调度器
             }
             
             
-            
-logging.basicConfig( #配置logging
-    filename=f'today.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    encoding='utf-8'
-)
+
+def clean_message(raw_message):
+    at_matches = re.findall(r'\[CQ:at,qq=(\d+)\]', raw_message)
+    at_text = f"[@{','.join(at_matches)}]" if at_matches else ""
+    cq_patterns = {
+        r'\[CQ:image,file=[^]]+\]': '[图片]',
+        r'\[CQ:reply,id=\d+\]': '[回复]',
+        r'\[CQ:file,file=[^]]+\]': '[文件]',
+        r'\[CQ:record,file=[^]]+\]': '[语音]',
+        r'\[CQ:video,file=[^]]+\]': '[视频]',
+    }
+    cleaned = raw_message
+    for pattern, replacement in cq_patterns.items():
+        cleaned = re.sub(pattern, replacement, cleaned)
+    if at_matches:
+        cleaned = re.sub(r'\[CQ:at,qq=\d+\]', at_text, cleaned)
+    return cleaned.strip()
+
 
 scheduler = MessageScheduler(maxsize=100)
 
 async def processmsg(msg: GroupMessage):
+    msg.raw_message=clean_message(msg.raw_message)
     if msg.group_id not in allowed_id:#不在范围内
         return #直接忽略，不加入队列
     elif any(keyword in msg.raw_message for keyword in urgent_keywords):#RT
@@ -107,21 +119,21 @@ async def processmsg(msg: GroupMessage):
     elif any(keyword in msg.raw_message for keyword in normal_keywords):#IDLE
         await scheduler.push(msg,TaskType.FROWARD)
     else:
-        logging.info(msg)
+        with open('today.log', 'a', encoding='utf-8') as f:
+            f.write(f"{msg.group_id}:{msg.raw_message}\n")
+            f.flush()
         
 async def daily_summary():
     file_path = 'today.log'
     print(f"开始读取日志: {file_path}")
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            chunk_number = 1
-            all_summaries = []
             while True: #每次读取 10K 字符
                 chunk = f.read(10000)
                 if not chunk:
                     break
                 msg = GroupMessage()
                 msg.raw_message = chunk
-                scheduler.push(msg,TaskType.SUMMARY)
+                await scheduler.push(msg,TaskType.SUMMARY)
     except FileNotFoundError:
         print(f"文件 {file_path} 不存在")

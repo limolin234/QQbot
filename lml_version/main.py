@@ -1,5 +1,5 @@
 import asyncio,aiocron
-from ncatbot.core import BotClient, PrivateMessage, GroupMessage
+from ncatbot.core import PrivateMessage, GroupMessage
 import scheduler,handler
 from bot import bot
 
@@ -20,9 +20,6 @@ async def on_group_message(msg: GroupMessage):
 @bot.startup_event()
 async def on_startup(*args):
     asyncio.create_task(worker())
-    print("worker task created")
-    @aiocron.crontab('0 22 * * *')
-    async def daily_summary():
-        scheduler.daily_summary()       
- 
+    aiocron.crontab('0 22 * * *', func=scheduler.daily_summary)
+
 bot.run()
