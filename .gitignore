@@ -7,5 +7,13 @@ __pycache__/
 logs/bot.log
 logs/message_handler.log
 
-lml_test/
+lml_version/*
+!lml_version/main.py
+!lml_version/scheduler.py
+!lml_version/handler.py
+!lml_version/bot.py.example
+!lml_version/main.py
+!lml_version/main.py
+
 logs/message_handler.log
+
