@@ -3,7 +3,7 @@ from loguru import logger
 import sys
 
 
-def setup_logger(log_file="logs/bot.log", level="INFO"):
+def setup_logger(log_file="logs/bot.log", level="DEBUG"):
     """
     配置日志系统
 

@@ -25,6 +25,9 @@ class NapCatClient:
         # API 响应队列（用于匹配 echo）
         self.api_responses: Dict[str, asyncio.Future] = {}
 
+        # 事件消息队列（在初始化时创建，避免消息丢失）
+        self._event_queue: asyncio.Queue = asyncio.Queue()
+
         # 消息接收任务
         self.receive_task: Optional[asyncio.Task] = None
 
@@ -73,8 +76,9 @@ class NapCatClient:
                     # 如果是事件消息（包含 post_type）
                     elif "post_type" in data:
                         # 事件消息会在 listen() 中处理
-                        if hasattr(self, '_event_queue'):
-                            await self._event_queue.put(data)
+                        logger.debug(f"收到事件消息: post_type={data.get('post_type')}, message_type={data.get('message_type')}")
+                        await self._event_queue.put(data)
+                        logger.debug(f"事件消息已加入队列，当前队列大小: {self._event_queue.qsize()}")
 
                 except json.JSONDecodeError as e:
                     logger.error(f"JSON 解析失败: {e}")
@@ -187,6 +191,34 @@ class NapCatClient:
             logger.error(f"发送群消息异常: {e}")
             return False
 
+    async def send_private_msg(self, user_id: int, message: str) -> bool:
+        """
+        发送私聊消息
+
+        Args:
+            user_id: 接收者 QQ 号
+            message: 消息内容
+
+        Returns:
+            True 如果发送成功
+        """
+        try:
+            result = await self.call_api("send_private_msg", {
+                "user_id": user_id,
+                "message": message
+            })
+
+            if result:
+                logger.info(f"私聊消息发送成功 -> 用户 {user_id}: {message[:50]}")
+                return True
+            else:
+                logger.error(f"私聊消息发送失败 -> 用户 {user_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"发送私聊消息异常: {e}")
+            return False
+
     async def listen(self) -> AsyncIterator[Dict[str, Any]]:
         """
         监听消息事件
@@ -199,9 +231,6 @@ class NapCatClient:
             return
 
         logger.info("开始监听消息...")
-
-        # 创建事件队列
-        self._event_queue = asyncio.Queue()
 
         try:
             while self.connected:

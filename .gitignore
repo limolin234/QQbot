@@ -5,5 +5,7 @@ __pycache__/
 **/__pycache__/
 
 logs/bot.log
+logs/message_handler.log
 
 lml_test/
+logs/message_handler.log
