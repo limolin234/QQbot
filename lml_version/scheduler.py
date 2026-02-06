@@ -122,15 +122,17 @@ async def processmsg(msg: GroupMessage):
     msg.raw_message=clean_message(msg.raw_message)
     if msg.group_id not in allowed_id:#不在范围内
         return #直接忽略，不加入队列
-    elif any(keyword in msg.raw_message for keyword in urgent_keywords):#RT
+    async with _file_lock: #写入日志
+        await asyncio.to_thread(  # 在线程池中执行，避免阻塞事件循环
+            _write_log, msg.group_id, msg.raw_message
+        )
+    if any(keyword in msg.raw_message for keyword in urgent_keywords):#RT
         await scheduler.RTpush(msg,TaskType.GROUPNOTE)  #加入实时队列
     elif any(keyword in msg.raw_message for keyword in normal_keywords):#IDLE
         await scheduler.push(msg,TaskType.FROWARD)
     else:
-        async with _file_lock:
-            await asyncio.to_thread(  # 在线程池中执行，避免阻塞事件循环
-                _write_log, msg.group_id, msg.raw_message
-            )
+        return #不包含关键词的消息不加入队列
+
 
 def _write_log(group_id: str, message: str):
     """同步写入日志的辅助函数"""

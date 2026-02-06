@@ -25,12 +25,64 @@
 #### 处理流程
 
 1. 收到的**allowed_id中的群的**消息首先的raw_message会经过正则识别和替换去除图片等用的[QC]这样的表达 节省token和储存
-2. 随后消息会经过 bot.py 中的 urgent 和 normal关键词匹配
-3. urgent_keywords匹配将作为urgent任务直接加入队列
-4. normal_keywords匹配作为normal任务直接加入队列
-5. 都不匹配的写入today.log文件中
-6. 每天22：00 将自动将today.log中的内容每10K字一组push到队列中处理(使用锁保护和零时文件替换 能保证安全 处理期间的信息留给下一天处理)
-7. worker()会pop任务然后阻塞的调用handle_task()处理任务
+2. 匹配的写入today.log文件中
+3. 随后匹配的消息会经过 bot.py 中的 urgent 和 normal关键词匹配
+4. urgent_keywords匹配将作为urgent任务直接加入队列
+5. normal_keywords匹配作为normal任务直接加入队列
+6. 都不匹配的再做处理
+7. 每天22：00 将自动将today.log中的内容每10K字一组push到队列中处理(使用锁保护和零时文件替换 能保证安全 处理期间的信息留给下一天处理)
+8. worker()会pop任务然后阻塞的调用handle_task()处理任务
+
+```mermaid
+    flowchart TB
+    Start([收到群消息]) --> PreProcess[正则处理raw_message<br/>去除图片等QC表达]
+    PreProcess --> CheckAllowed{是否在<br/>allowed_id群组?}
+    
+    CheckAllowed -->|否| Discard([丢弃消息])
+    CheckAllowed -->|是| MatchKeyword{关键词匹配}
+    MatchKeyword -->| | WriteLog[写入today.log文件]
+    
+    WriteLog -->|urgent_keywords| RTpush[RTpush加入队列<br/>高优先级任务<br/>URGENT类型]
+    WriteLog -->|normal_keywords| Push[push加入队列<br/>普通优先级任务<br/>FORWARD类型]
+    
+    
+    DailyCheck{是否22:00?}
+    DailyCheck -->|是| BatchProcess[按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
+    DailyCheck -->|否| WaitNext[等待下一天处理]
+    BatchProcess --> QueueBuffer
+    
+    RTpush --> QueueBuffer[(优先任务队列<br/>最多100个任务<br/>带锁保护)]
+    Push --> QueueBuffer
+    
+    QueueBuffer --> Worker[worker线程pop任务]
+    Worker --> HandleTask[handle_task处理]
+    
+    HandleTask --> TypeCheck{task.type?}
+    
+    TypeCheck -->|SUMMARY| Summary[AI总结内容]
+    Summary --> SendSelf1[发送给自己账号]
+    SendSelf1 --> End1([结束])
+    
+    TypeCheck -->|FORWARD| Judge[AI判断是否转发]
+    Judge --> NeedForward{需要转发?}
+    NeedForward -->|是| Forward[转发消息<br/>可添加总结]
+    NeedForward -->|否| Skip1([跳过])
+    Forward --> End2([结束])
+    
+    TypeCheck -->|URGENT<br/>接龙任务| SafetyCheck[安全检查限制]
+    SafetyCheck --> JudgeJoin{AI判断是否接龙?}
+    JudgeJoin -->|是| JoinContent[生成接龙内容]
+    JoinContent --> SendGroup[发送到群]
+    SendGroup --> Notify[私发通知自己]
+    Notify --> End3([结束])
+    JudgeJoin -->|否| Skip2([跳过])
+    
+    Worker -.循环.-> Worker
+    
+    style QueueBuffer fill:#e1f5ff
+    style SafetyCheck fill:#ffe1e1
+    style SendGroup fill:#ffe1e1
+```
 
 ## 智能体要实现的任务
 
@@ -53,4 +105,3 @@ handle_task接收task
 ## 安全问题
 
 只有 URGENT 类接龙任务 存在群发 所以建议在局部添加限制 避免把相关代码引入到其他用不到的文件中形成屎山
-
