@@ -39,15 +39,16 @@
     PreProcess --> CheckAllowed{是否在<br/>allowed_id群组?}
     
     CheckAllowed -->|否| Discard([丢弃消息])
-    CheckAllowed -->|是| MatchKeyword{关键词匹配}
-    MatchKeyword -->| | WriteLog[写入today.log文件]
+    CheckAllowed -->|是| WriteLog[写入today.log文件]
     
-    WriteLog -->|urgent_keywords| RTpush[RTpush加入队列<br/>高优先级任务<br/>URGENT类型]
-    WriteLog -->|normal_keywords| Push[push加入队列<br/>普通优先级任务<br/>FORWARD类型]
+    WriteLog --> MatchKeyword{关键词匹配}
     
+    MatchKeyword -->|urgent_keywords| RTpush[RTpush加入队列<br/>高优先级任务<br/>URGENT类型]
+    MatchKeyword -->|normal_keywords| Push[push加入队列<br/>普通优先级任务<br/>FORWARD类型]
+    MatchKeyword -->|无匹配| Continue([继续记录])
     
     DailyCheck{是否22:00?}
-    DailyCheck -->|是| BatchProcess[按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
+    DailyCheck -->|是| BatchProcess[读取today.log<br/>按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
     DailyCheck -->|否| WaitNext[等待下一天处理]
     BatchProcess --> QueueBuffer
     
@@ -82,6 +83,8 @@
     style QueueBuffer fill:#e1f5ff
     style SafetyCheck fill:#ffe1e1
     style SendGroup fill:#ffe1e1
+    style WriteLog fill:#fff9c4
+
 ```
 
 ## 智能体要实现的任务
