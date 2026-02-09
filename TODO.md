@@ -2,7 +2,7 @@
 
 ## P0 必做（先跑起来）
 
-- [ ] 配置真实参数：填写 `QQnumber`、`allowed_id`、关键词集合（`bot.py`）
+- [x] 配置真实参数：填写 `QQnumber`、`allowed_id`、关键词集合（`bot.py`）
 - [ ] 统一群号类型（`str/int` 一致），避免 `allowed_id` 过滤失效（`bot.py`、`scheduler.py`）
 - [ ] 实现 `SUMMARY` 任务：对日志片段做总结并私发给自己（`handler.py`）
 - [ ] 实现 `FORWARD` 任务：先判断“是否值得转发”，再执行转发/跳过（`handler.py`）
