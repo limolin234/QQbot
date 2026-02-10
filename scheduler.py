@@ -1,5 +1,6 @@
-import asyncio,heapq,os,re
+import asyncio,heapq,json,os,re
 from collections import defaultdict
+from datetime import datetime, timezone
 from enum import IntEnum
 from types import SimpleNamespace
 from ncatbot.core import GroupMessage
@@ -119,27 +120,59 @@ def clean_message(raw_message):
 scheduler = MessageScheduler(maxsize=100)
 
 
+LOG_FILE_PATH = "today.jsonl"
+LOG_TEMP_FILE_PATH = "today.jsonl.processing"
+
+
 _file_lock = asyncio.Lock()
 async def processmsg(msg: GroupMessage):
-    msg.raw_message=clean_message(msg.raw_message)
+    original_raw_message = getattr(msg, "raw_message", "") or ""
+    cleaned_message = clean_message(original_raw_message)
+
+    msg.raw_message = cleaned_message
     if msg.group_id not in allowed_id:#不在范围内
         return #直接忽略，不加入队列
+
+    ts = _extract_message_ts(msg)
+    user_name = _extract_user_name(msg)
+
     async with _file_lock: #写入日志
         await asyncio.to_thread(  # 在线程池中执行，避免阻塞事件循环
-            _write_log, msg.group_id, getattr(msg, "user_id", "unknown"), msg.raw_message
+            _write_log,
+            ts,
+            msg.group_id,
+            getattr(msg, "user_id", "unknown"),
+            user_name,
+            "group",
+            cleaned_message,
         )
-    if any(keyword in msg.raw_message for keyword in urgent_keywords):#RT
+    if any(keyword in cleaned_message for keyword in urgent_keywords):#RT
         await scheduler.RTpush(msg,TaskType.GROUPNOTE)  #加入实时队列
-    elif any(keyword in msg.raw_message for keyword in normal_keywords):#IDLE
+    elif any(keyword in cleaned_message for keyword in normal_keywords):#IDLE
         await scheduler.push(msg,TaskType.FROWARD)
     else:
         return #不包含关键词的消息不加入队列
 
 
-def _write_log(group_id: str, user_id: str, message: str):
-    """同步写入日志的辅助函数"""
-    with open('today.log', 'a', encoding='utf-8') as f:
-        f.write(f"{group_id}|{user_id}:{message}\n")
+def _write_log(
+    ts: str,
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    chat_type: str,
+    cleaned_message: str,
+):
+    """同步写入 JSONL 日志的辅助函数。"""
+    payload = {
+        "ts": ts,
+        "group_id": str(group_id),
+        "user_id": str(user_id),
+        "user_name": user_name,
+        "chat_type": chat_type,
+        "cleaned_message": cleaned_message,
+    }
+    with open(LOG_FILE_PATH, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         f.flush()
 
 
@@ -147,18 +180,19 @@ async def daily_summary():
     """按天汇总日志并投递 SUMMARY 任务。
 
     处理流程：
-    1) 在文件锁保护下将 `today.log` 原子重命名为临时文件，避免与实时写入冲突。
+    1) 在文件锁保护下将 `today.jsonl` 原子重命名为临时文件，避免与实时写入冲突。
     2) 读取临时文件并按 `(group_id, user_id)` 分组。
     3) 对每个分组做组内分块：单组内容超过 `chunk_size` 时继续切分，但保持同组语义。
     4) 将多个较小分组块合并为不超过 `chunk_size` 的最终块，减少后续 summary 次数。
     5) 把最终块逐条入队为 `TaskType.SUMMARY`，供 worker 消费。
 
     说明：
-    - 兼容两种日志格式：`group_id|user_id:message`（新）与 `group_id:message`（旧）。
+    - 当前格式为 JSONL：`ts/group_id/user_id/user_name/chat_type/cleaned_message`。
+    - 兼容旧文本格式：`group_id|user_id:message` 与 `group_id:message`。
     - 每个最终 chunk 会写入 `GroupMessage.raw_message` 作为 summary 工作流输入。
     """
-    file_path = 'today.log'
-    temp_path = 'today.log.processing'
+    file_path = LOG_FILE_PATH
+    temp_path = LOG_TEMP_FILE_PATH
     chunk_size = 10000
     print(f"开始读取日志: {file_path}")
     try:
@@ -169,19 +203,21 @@ async def daily_summary():
                 print("没有日志需要处理")
                 return
 
-        grouped_messages: dict[tuple[str, str], list[str]] = defaultdict(list)
+        grouped_messages: dict[tuple[str, str, str], list[tuple[str, str]]] = defaultdict(list)
         with open(temp_path, 'r', encoding='utf-8') as f:
             for raw_line in f:
                 line = raw_line.strip()
                 if not line:
                     continue
-                group_id, user_id, message = _parse_log_line(line)
-                grouped_messages[(group_id, user_id)].append(message)
+                group_id, user_id, user_name, ts, message, chat_type = _parse_log_line(line)
+                if chat_type != "group":
+                    continue
+                grouped_messages[(group_id, user_id, user_name)].append((ts, message))
 
         grouped_chunks: list[str] = []
-        for (group_id, user_id), messages in grouped_messages.items():
+        for (group_id, user_id, user_name), messages in grouped_messages.items():
             grouped_chunks.extend(
-                _split_group_messages(group_id, user_id, messages, chunk_size)
+                _split_group_messages(group_id, user_id, user_name, messages, chunk_size)
             )
 
         final_chunks = _merge_small_chunks(grouped_chunks, chunk_size)
@@ -199,30 +235,106 @@ async def daily_summary():
         print(f"处理日志时出错: {e}")
 
 
-def _parse_log_line(line: str) -> tuple[str, str, str]:
-    """兼容两种格式:
-    1) group_id|user_id:message
-    2) group_id:message (旧格式)
+def _parse_log_line(line: str) -> tuple[str, str, str, str, str, str]:
+    """解析日志行，兼容 JSONL 与旧文本格式。
+
+    返回: (group_id, user_id, user_name, ts, message, chat_type)
     """
+    try:
+        record = json.loads(line)
+        if isinstance(record, dict):
+            return (
+                str(record.get("group_id", "unknown_group")),
+                str(record.get("user_id", "unknown_user")),
+                str(record.get("user_name", "unknown_user")),
+                str(record.get("ts", "")),
+                str(record.get("cleaned_message", record.get("raw_message", ""))).strip(),
+                str(record.get("chat_type", "group")),
+            )
+    except json.JSONDecodeError:
+        pass
+
     if ":" not in line:
-        return "unknown_group", "unknown_user", line
+        return "unknown_group", "unknown_user", "unknown_user", "", line, "group"
 
     prefix, message = line.split(":", 1)
     if "|" in prefix:
         group_id, user_id = prefix.split("|", 1)
-        return group_id.strip(), user_id.strip(), message.strip()
+        normalized_user_id = user_id.strip()
+        return group_id.strip(), normalized_user_id, normalized_user_id, "", message.strip(), "group"
 
-    return prefix.strip(), "unknown_user", message.strip()
+    return prefix.strip(), "unknown_user", "unknown_user", "", message.strip(), "group"
+
+
+def _extract_message_ts(msg: GroupMessage) -> str:
+    """提取消息时间并转为 ISO8601 字符串。"""
+    ts_candidate = getattr(msg, "time", None)
+    if ts_candidate is not None:
+        try:
+            ts_value = float(ts_candidate)
+            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+        except (TypeError, ValueError, OSError):
+            pass
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _extract_user_name(msg: GroupMessage) -> str:
+    """提取发送者昵称，优先群名片，其次 QQ 昵称。"""
+    sender = getattr(msg, "sender", None)
+
+    def pick(data, *keys):
+        for key in keys:
+            if isinstance(data, dict):
+                value = data.get(key)
+            else:
+                value = getattr(data, key, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    for source in (msg, sender):
+        if not source:
+            continue
+        name = pick(
+            source,
+            "card",
+            "group_card",
+            "display_name",
+            "nickname",
+            "nick",
+            "user_name",
+            "sender_nickname",
+        )
+        if name:
+            return name
+
+    return str(getattr(msg, "user_id", "unknown_user"))
+
+
+def _format_summary_time(ts: str) -> str:
+    """将 ISO 时间压缩为 summary 友好的 HH:MM，解析失败则返回空。"""
+    if not ts:
+        return ""
+    try:
+        normalized = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%H:%M")
+    except ValueError:
+        return ""
 
 
 def _split_group_messages(
     group_id: str,
     user_id: str,
-    messages: list[str],
+    user_name: str,
+    messages: list[tuple[str, str]],
     chunk_size: int,
 ) -> list[str]:
     """单组分块：即便超大也保持同组。"""
-    header = f"[group:{group_id}][user:{user_id}]"
+    safe_name = (user_name or "unknown_user").replace("]", "）")
+    header = f"[group:{group_id}][user:{user_id}][name:{safe_name}]"
     max_body_chars = max(1, chunk_size - len(header) - 1)
     chunks: list[str] = []
     current_body = ""
@@ -234,8 +346,10 @@ def _split_group_messages(
         chunks.append(f"{header}\n{current_body}")
         current_body = ""
 
-    for message in messages:
-        remaining = message
+    for ts, message in messages:
+        time_prefix = _format_summary_time(ts)
+        normalized_message = f"[{time_prefix}] {message}" if time_prefix else message
+        remaining = normalized_message
         while remaining:
             if not current_body:
                 room = max_body_chars

@@ -2,7 +2,7 @@
 Summary 工作流中的预处理与 LangGraph 汇总模块。
 
 职责：
-1) 解析 scheduler 生成的 `[group:...][user:...]` 来源块。
+1) 解析 scheduler 生成的 `[group:...][user:...][name:...]` 来源块。
 2) 清洗行文本（去空、截断、去重、限制最大行数）。
 3) 通过最少节点的 LangGraph 执行 summary（Map -> Finalize）。
 
@@ -53,7 +53,10 @@ UNKNOWN_USER = "unknown_user"
 DEFAULT_MAX_LINE_CHARS = 300
 DEFAULT_MAX_LINES = 500
 DEFAULT_LLM_MODEL = "gpt-4o-mini"
-HEADER_RE = re.compile(r"^\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\]$")
+HEADER_RE = re.compile(
+    r"^\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\](?:\[name:(?P<user_name>[^\]]+)\])?$"
+)
+TIME_PREFIX_RE = re.compile(r"^\[(?P<hhmm>\d{2}:\d{2})\]\s*")
 
 
 SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消息总结成可执行日报。
@@ -83,9 +86,11 @@ USER_SUMMARY_PROMPT_TEMPLATE = """请总结以下单个 chunk 的消息。
 chunk_index: {chunk_index}
 source_count: {source_count}
 sources: {sources}
+source_details:
+{source_details}
 unique_lines: {unique_lines}
 
-输入消息（每行格式: group|user:message）：
+输入消息（每行格式: group|user:[HH:MM] message）：
 ---BEGIN_MESSAGES---
 {payload_text}
 ---END_MESSAGES---
@@ -100,12 +105,14 @@ class SummaryBlock:
     该结构直接承载来源上下文：
     - group_id: 群来源
     - user_id: 发送者来源
+    - user_name: 发送者昵称（群名片优先）
     - lines: 该来源块下的原始行
     """
 
     group_id: str
     user_id: str
     lines: list[str]
+    user_name: str = UNKNOWN_USER
 
 
 @dataclass
@@ -283,14 +290,17 @@ def format_summary_message(result: SummaryFinalResult) -> str:
     highlights = _safe_list(result.highlights, max_items=6)
     risks = _safe_list(result.risks, max_items=5)
     todos = _safe_list(result.todos, max_items=5)
+    trace_lines = _build_trace_lines(result)
 
     highlight_text = "\n".join(f"- {item}" for item in highlights) or "- （暂无）"
     risk_text = "\n".join(f"- {item}" for item in risks) or "- （暂无）"
     todo_text = "\n".join(f"- {item}" for item in todos) or "- （暂无）"
+    trace_text = "\n".join(f"- {item}" for item in trace_lines) or "- （暂无）"
 
     return (
         f"【每日总结 {date_text}】\n"
         f"概览：{result.overview or '（暂无概览）'}\n\n"
+        f"【溯源】\n{trace_text}\n\n"
         f"【关键要点】\n{highlight_text}\n\n"
         f"【风险】\n{risk_text}\n\n"
         f"【待办】\n{todo_text}\n\n"
@@ -329,6 +339,7 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
                 if block.group_id or block.user_id
             }
         )
+        source_detail_lines = _build_source_details(payload.blocks)
         messages = [
             SystemMessage(
                 content=SYSTEM_SUMMARY_PROMPT
@@ -338,6 +349,7 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
                     chunk_index=chunk_index,
                     source_count=len(source_refs),
                     sources=", ".join(source_refs) if source_refs else "(none)",
+                    source_details="\n".join(source_detail_lines) if source_detail_lines else "(none)",
                     unique_lines=payload.stats.get("unique_lines", 0),
                     payload_text=payload.text,
                 )
@@ -474,6 +486,7 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
     blocks: list[SummaryBlock] = []
     current_group = UNKNOWN_GROUP
     current_user = UNKNOWN_USER
+    current_user_name = UNKNOWN_USER
     current_lines: list[str] = []
     saw_content = False
 
@@ -483,6 +496,7 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
             SummaryBlock(
                 group_id=current_group,
                 user_id=current_user,
+                user_name=current_user_name,
                 lines=current_lines,
             )
         )
@@ -495,6 +509,8 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
                 flush()
             current_group = header.group("group_id").strip() or UNKNOWN_GROUP
             current_user = header.group("user_id").strip() or UNKNOWN_USER
+            parsed_user_name = (header.group("user_name") or "").strip()
+            current_user_name = parsed_user_name or current_user
             current_lines = []
             saw_content = True
             continue
@@ -502,6 +518,7 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
         if not saw_content:
             current_group = UNKNOWN_GROUP
             current_user = UNKNOWN_USER
+            current_user_name = UNKNOWN_USER
             current_lines = []
             saw_content = True
 
@@ -547,6 +564,85 @@ def _build_stats(chunk: SummaryChunk) -> dict[str, float | int]:
         "output_chars": chunk.output_chars,
         "elapsed_ms": chunk.elapsed_ms,
     }
+
+
+def _build_source_details(blocks: list[SummaryBlock]) -> list[str]:
+    details: list[str] = []
+    for block in blocks:
+        details.append(
+            f"- group={block.group_id}, user={block.user_id}, name={block.user_name}, lines={len(block.lines)}"
+        )
+    return details
+
+
+def _build_trace_lines(result: SummaryFinalResult) -> list[str]:
+    """构建“溯源”文本：按群聚合来源、昵称与时间范围。"""
+    group_summary: dict[str, dict[str, Any]] = {}
+
+    for map_result in result.map_results:
+        for block in map_result.blocks:
+            group_id = block.group_id or UNKNOWN_GROUP
+            group_entry = group_summary.setdefault(
+                group_id,
+                {
+                    "senders": set(),
+                    "times": [],
+                    "message_count": 0,
+                },
+            )
+
+            user_name = (block.user_name or "").strip() or block.user_id or UNKNOWN_USER
+            sender_ref = f"{user_name}({block.user_id})" if block.user_id else user_name
+            group_entry["senders"].add(sender_ref)
+
+            for line in block.lines:
+                cleaned = line.strip()
+                if not cleaned:
+                    continue
+                group_entry["message_count"] += 1
+
+                hhmm = _extract_hhmm(cleaned)
+                if hhmm:
+                    group_entry["times"].append(hhmm)
+
+    if not group_summary and result.sources:
+        return [f"来源标识：{', '.join(result.sources)}"]
+
+    trace_lines: list[str] = []
+    for group_id in sorted(group_summary.keys()):
+        entry = group_summary[group_id]
+        sender_text = _format_sender_list(sorted(entry["senders"]))
+        time_text = _format_time_span(entry["times"])
+        trace_lines.append(
+            f"{group_id}群主要说了 {entry['message_count']} 条消息，来自 {sender_text}，发送时间为{time_text}"
+        )
+
+    return trace_lines
+
+
+def _extract_hhmm(line: str) -> str:
+    match = TIME_PREFIX_RE.match(line)
+    if not match:
+        return ""
+    return match.group("hhmm")
+
+
+def _format_time_span(times: list[str]) -> str:
+    normalized = sorted({time_text for time_text in times if time_text})
+    if not normalized:
+        return "时间未知"
+    if len(normalized) == 1:
+        return f"今天{normalized[0]}"
+    return f"今天{normalized[0]}~{normalized[-1]}"
+
+
+def _format_sender_list(senders: list[str], max_items: int = 3) -> str:
+    if not senders:
+        return "未知发送者"
+    if len(senders) <= max_items:
+        return "、".join(senders)
+    shown = "、".join(senders[:max_items])
+    return f"{shown} 等{len(senders)}人"
 
 
 def _safe_list(items: list[str], *, min_items: int = 0, max_items: int = 999) -> list[str]:
