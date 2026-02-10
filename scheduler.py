@@ -1,4 +1,5 @@
 import asyncio,heapq,os,re
+from collections import defaultdict
 from enum import IntEnum
 from ncatbot.core import GroupMessage
 from time import time
@@ -124,7 +125,7 @@ async def processmsg(msg: GroupMessage):
         return #直接忽略，不加入队列
     async with _file_lock: #写入日志
         await asyncio.to_thread(  # 在线程池中执行，避免阻塞事件循环
-            _write_log, msg.group_id, msg.raw_message
+            _write_log, msg.group_id, getattr(msg, "user_id", "unknown"), msg.raw_message
         )
     if any(keyword in msg.raw_message for keyword in urgent_keywords):#RT
         await scheduler.RTpush(msg,TaskType.GROUPNOTE)  #加入实时队列
@@ -134,16 +135,30 @@ async def processmsg(msg: GroupMessage):
         return #不包含关键词的消息不加入队列
 
 
-def _write_log(group_id: str, message: str):
+def _write_log(group_id: str, user_id: str, message: str):
     """同步写入日志的辅助函数"""
     with open('today.log', 'a', encoding='utf-8') as f:
-        f.write(f"{group_id}:{message}\n")
+        f.write(f"{group_id}|{user_id}:{message}\n")
         f.flush()
 
 
 async def daily_summary():
+    """按天汇总日志并投递 SUMMARY 任务。
+
+    处理流程：
+    1) 在文件锁保护下将 `today.log` 原子重命名为临时文件，避免与实时写入冲突。
+    2) 读取临时文件并按 `(group_id, user_id)` 分组。
+    3) 对每个分组做组内分块：单组内容超过 `chunk_size` 时继续切分，但保持同组语义。
+    4) 将多个较小分组块合并为不超过 `chunk_size` 的最终块，减少后续 summary 次数。
+    5) 把最终块逐条入队为 `TaskType.SUMMARY`，供 worker 消费。
+
+    说明：
+    - 兼容两种日志格式：`group_id|user_id:message`（新）与 `group_id:message`（旧）。
+    - 每个最终 chunk 会写入 `GroupMessage.raw_message` 作为 summary 工作流输入。
+    """
     file_path = 'today.log'
     temp_path = 'today.log.processing'
+    chunk_size = 10000
     print(f"开始读取日志: {file_path}")
     try:
         async with _file_lock: #使用锁替换 防止遗漏信息
@@ -152,15 +167,120 @@ async def daily_summary():
             except FileNotFoundError:
                 print("没有日志需要处理")
                 return
+
+        grouped_messages: dict[tuple[str, str], list[str]] = defaultdict(list)
         with open(temp_path, 'r', encoding='utf-8') as f:
-            while True:
-                chunk = f.read(10000)
-                if not chunk:
-                    break
-                msg = GroupMessage()  # type: ignore
-                msg.raw_message = chunk
-                await scheduler.push(msg, TaskType.SUMMARY)
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                group_id, user_id, message = _parse_log_line(line)
+                grouped_messages[(group_id, user_id)].append(message)
+
+        grouped_chunks: list[str] = []
+        for (group_id, user_id), messages in grouped_messages.items():
+            grouped_chunks.extend(
+                _split_group_messages(group_id, user_id, messages, chunk_size)
+            )
+
+        final_chunks = _merge_small_chunks(grouped_chunks, chunk_size)
+        for chunk in final_chunks:
+            msg = GroupMessage()  # type: ignore
+            msg.raw_message = chunk
+            await scheduler.push(msg, TaskType.SUMMARY)
+
+        print(
+            f"日志分组完成: groups={len(grouped_messages)}, "
+            f"group_chunks={len(grouped_chunks)}, final_chunks={len(final_chunks)}"
+        )
         await asyncio.to_thread(os.remove, temp_path)
         print("日志处理完成")
     except Exception as e:
         print(f"处理日志时出错: {e}")
+
+
+def _parse_log_line(line: str) -> tuple[str, str, str]:
+    """兼容两种格式:
+    1) group_id|user_id:message
+    2) group_id:message (旧格式)
+    """
+    if ":" not in line:
+        return "unknown_group", "unknown_user", line
+
+    prefix, message = line.split(":", 1)
+    if "|" in prefix:
+        group_id, user_id = prefix.split("|", 1)
+        return group_id.strip(), user_id.strip(), message.strip()
+
+    return prefix.strip(), "unknown_user", message.strip()
+
+
+def _split_group_messages(
+    group_id: str,
+    user_id: str,
+    messages: list[str],
+    chunk_size: int,
+) -> list[str]:
+    """单组分块：即便超大也保持同组。"""
+    header = f"[group:{group_id}][user:{user_id}]"
+    max_body_chars = max(1, chunk_size - len(header) - 1)
+    chunks: list[str] = []
+    current_body = ""
+
+    def flush_current() -> None:
+        nonlocal current_body
+        if not current_body:
+            return
+        chunks.append(f"{header}\n{current_body}")
+        current_body = ""
+
+    for message in messages:
+        remaining = message
+        while remaining:
+            if not current_body:
+                room = max_body_chars
+            else:
+                room = max_body_chars - len(current_body) - 1
+
+            if room <= 0:
+                flush_current()
+                continue
+
+            part = remaining[:room]
+            remaining = remaining[room:]
+
+            if current_body:
+                current_body += "\n" + part
+            else:
+                current_body = part
+
+            if remaining:
+                flush_current()
+
+    flush_current()
+    if not chunks:
+        chunks.append(header)
+    return chunks
+
+
+def _merge_small_chunks(grouped_chunks: list[str], chunk_size: int) -> list[str]:
+    """多组小块合并：尽量打包到同一 chunk。"""
+    merged: list[str] = []
+    current = ""
+
+    for block in grouped_chunks:
+        if not current:
+            current = block
+            continue
+
+        candidate = f"{current}\n\n{block}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+        else:
+            merged.append(current)
+            current = block
+
+    if current:
+        merged.append(current)
+
+    return merged
