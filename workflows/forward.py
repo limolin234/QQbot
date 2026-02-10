@@ -11,7 +11,6 @@ FORWARD_AGENT_CONFIG = load_current_agent_config(__file__)
 
 
 def get_forward_agent_config() -> dict[str, Any]:
-    """返回 forward agent 的当前配置（来自 `workflows/agent_config.json`）。"""
+    """返回 forward agent 当前配置（优先 `workflows/agent_config.yaml`）。"""
     return dict(FORWARD_AGENT_CONFIG)
-
 

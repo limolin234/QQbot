@@ -1,0 +1,39 @@
+# 这是所有 agent 统一使用的配置文件，用于集中管理各个工作流（如 summary、forward 等）的参数设置。
+# 
+# 配置文件结构说明：
+# - 每个 agent（如 summary、forward）都有独立的配置节（以 "{}_config" 命名），包含其核心参数。
+# - 例如 summary_config 包含摘要相关的参数（如模型、最大行数、温度等），forward_config 包含消息转发相关设置（如被监视群号等）。
+# 
+# 使用方法：
+# - 可按照实际需求，在对应 config 区域调整参数，无需更改程序代码，重启程序后自动生效。
+# - 文件支持注释说明和示例，可参考或自行拓展其他 agent 配置，实现统一管理。
+# - 建议仅在明确理解参数意义后进行修改，避免配置错误导致功能异常。
+# 
+# 特别提示：
+# - 此文件一般与 workflows 目录下的 py 文件（如 summary.py、forward.py）搭配使用，参数名称需与代码保持一致。
+# - 若需添加新 agent，可参考现有格式扩展配置节。
+
+summary_config:
+  file_name: summary.py
+  config:
+    model: gpt-4o-mini
+    max_line_chars: 300
+    max_lines: 500
+    temperature: 0.2
+    
+    summary_chat_scope: group    
+    # summary_chat_scope：配置需要总结消息的范围
+    # 可选值：group(仅总结群聊消息) / private(仅私聊) / all(群聊+私聊)
+
+forward_config:
+  file_name: forward.py
+  config:
+    model: gpt-4o-mini
+    monitor_group_qq_number:
+    # monitor_group_qq_number： 监视需要转发消息的群里（一般是重要通知群）
+    # 是一个列表。 用 - 来逐个表示
+    # 例如：
+    # - "群号1"
+    # - "群号2"
+      - "1075786046"
+

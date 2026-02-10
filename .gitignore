@@ -1,5 +1,6 @@
 .vscode
 .claude
+.codex
 .env
 __pycache__/
 **/__pycache__/
