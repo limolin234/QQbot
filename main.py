@@ -1,43 +1,25 @@
-"""QQ Bot 主程序 - 多 Agent 架构"""
-import asyncio
-from core.bot_initializer import initialize_bot, cleanup_bot
-from core.cli_starter import start_cli
-from core.message_processor import message_listener
-from core.process_manager import ProcessManager
+import asyncio,aiocron
+from ncatbot.core import PrivateMessage, GroupMessage
+import scheduler,handler
+from bot import bot
 
+async def worker():
+    while True:
+        task = await scheduler.scheduler.pop()
+        await handler.handle_task(task)
 
-async def main():
-    """主函数"""
-    # 检查重复进程
-    process_manager = ProcessManager()
+@bot.private_event()# type: ignore
+async def on_private_message(msg: PrivateMessage):
+    if msg.raw_message == "测试":
+        await bot.api.post_private_msg(msg.user_id, text="NcatBot测试成功")
 
-    if not process_manager.check_and_handle_duplicates():
-        return
+@bot.group_event()# type: ignore
+async def on_group_message(msg: GroupMessage):
+    await scheduler.processmsg(msg)
+    
+@bot.startup_event()# type: ignore
+async def on_startup(*args):
+    asyncio.create_task(worker())
+    aiocron.crontab('0 22 * * *', func=scheduler.daily_summary)
 
-    # 保存当前进程 PID
-    process_manager.save_pid()
-
-    try:
-        # 初始化 Bot 系统
-        napcat_client, agent_manager = await initialize_bot()
-
-        if not napcat_client or not agent_manager:
-            return
-
-        # 启动 CLI 界面
-        cli_manager, cli_task_or_thread = start_cli(agent_manager)
-
-        # 监听消息
-        try:
-            await message_listener(napcat_client, agent_manager)
-        finally:
-            # 清理资源
-            await cleanup_bot(napcat_client, agent_manager, cli_manager, cli_task_or_thread)
-
-    finally:
-        # 删除 PID 文件
-        process_manager.remove_pid()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+bot.run()

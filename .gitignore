@@ -5,8 +5,9 @@ __pycache__/
 **/__pycache__/
 
 napcat/
-logs/bot.log
-logs/message_handler.log
+logs
+data
+plugins
 
 lml_version/*
 !lml_version/main.py
@@ -17,4 +18,5 @@ lml_version/*
 !lml_version/main.py
 
 logs/message_handler.log
+
 
