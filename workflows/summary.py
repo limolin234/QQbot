@@ -42,6 +42,8 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from .agent_config_loader import load_current_agent_config
+
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover
@@ -50,16 +52,23 @@ except Exception:  # pragma: no cover
 
 UNKNOWN_GROUP = "unknown_group"
 UNKNOWN_USER = "unknown_user"
-DEFAULT_MAX_LINE_CHARS = 300
-DEFAULT_MAX_LINES = 500
-DEFAULT_LLM_MODEL = "gpt-4o-mini"
+
+SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
+
+
+DEFAULT_MAX_LINE_CHARS = int(SUMMARY_AGENT_CONFIG.get("max_line_chars"), 300)
+DEFAULT_MAX_LINES = int(SUMMARY_AGENT_CONFIG.get("max_lines"), 500)
+DEFAULT_LLM_MODEL = str(SUMMARY_AGENT_CONFIG.get("model") or "gpt-4o-mini")
+DEFAULT_LLM_TEMPERATURE = float(SUMMARY_AGENT_CONFIG.get("temperature"), 0.2)
+
+
 HEADER_RE = re.compile(
     r"^\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\](?:\[name:(?P<user_name>[^\]]+)\])?$"
 )
 TIME_PREFIX_RE = re.compile(r"^\[(?P<hhmm>\d{2}:\d{2})\]\s*")
 
 
-SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消息总结成可执行日报。
+_DEFAULT_SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消息总结成可执行日报。
 
 # 任务目标
 - 从输入消息中提炼：整体进展、关键要点、风险、待办。
@@ -82,7 +91,7 @@ SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消�
 - 严格按结构化字段返回，不要输出多余说明。"""
 
 
-USER_SUMMARY_PROMPT_TEMPLATE = """请总结以下单个 chunk 的消息。
+_DEFAULT_USER_SUMMARY_PROMPT_TEMPLATE = """请总结以下单个 chunk 的消息。
 chunk_index: {chunk_index}
 source_count: {source_count}
 sources: {sources}
@@ -96,6 +105,9 @@ unique_lines: {unique_lines}
 ---END_MESSAGES---
 
 请基于以上输入，按约定结构化字段输出总结。"""
+
+SYSTEM_SUMMARY_PROMPT = str(_DEFAULT_SYSTEM_SUMMARY_PROMPT)
+USER_SUMMARY_PROMPT_TEMPLATE = str(_DEFAULT_USER_SUMMARY_PROMPT_TEMPLATE)
 
 
 @dataclass
@@ -264,7 +276,7 @@ def run_summary_graph(
     *,
     chunk_index: int = 1,
     model_name: str | None = None,
-    temperature: float = 0.2,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
 ) -> SummaryFinalResult:
     """运行 summary 的 LangGraph 核心流程（当前为最少节点两步）。
 

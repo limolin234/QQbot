@@ -120,8 +120,8 @@ def clean_message(raw_message):
 scheduler = MessageScheduler(maxsize=100)
 
 
-LOG_FILE_PATH = "today.jsonl"
-LOG_TEMP_FILE_PATH = "today.jsonl.processing"
+LOG_FILE_PATH = "message.jsonl"
+LOG_TEMP_FILE_PATH = "message.jsonl.processing"
 
 
 _file_lock = asyncio.Lock()
@@ -180,7 +180,7 @@ async def daily_summary():
     """按天汇总日志并投递 SUMMARY 任务。
 
     处理流程：
-    1) 在文件锁保护下将 `today.jsonl` 原子重命名为临时文件，避免与实时写入冲突。
+    1) 在文件锁保护下将 `message.jsonl` 原子重命名为临时文件，避免与实时写入冲突。
     2) 读取临时文件并按 `(group_id, user_id)` 分组。
     3) 对每个分组做组内分块：单组内容超过 `chunk_size` 时继续切分，但保持同组语义。
     4) 将多个较小分组块合并为不超过 `chunk_size` 的最终块，减少后续 summary 次数。

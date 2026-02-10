@@ -13,8 +13,8 @@ bot.py
 config.yaml
 
 logs/message_handler.log
-today.log
-today.jsonl
+message.log
+message.jsonl
 
 *.processing
 
@@ -22,4 +22,4 @@ today.jsonl
 config.yaml
 
 bot.py
-today copy.jsonl
+message copy.jsonl
