@@ -14,6 +14,10 @@ config.yaml
 
 logs/message_handler.log
 today.log
+today.jsonl
+
+*.processing
+
 
 config.yaml
 
