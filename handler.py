@@ -2,6 +2,7 @@ import asyncio
 
 from scheduler import PriorityTask, TaskType
 from bot import bot, QQnumber
+from workflows.forward import run_forward_graph
 from workflows.summary import (
     format_summary_message,
     preprocess_summary_chunk,
@@ -43,8 +44,31 @@ async def handle_task(task: PriorityTask):
             print(debug_msg)
 
     elif task.type == TaskType.FROWARD:
-        await bot.api.post_private_msg(QQnumber, text=task.msg.raw_message)
-        print(task.msg.raw_message)
+        ts = str(getattr(task.msg, "ts", ""))
+        group_id = str(getattr(task.msg, "group_id", ""))
+        user_id = str(getattr(task.msg, "user_id", ""))
+        user_name = str(getattr(task.msg, "user_name", ""))
+        cleaned_message = str(
+            getattr(task.msg, "cleaned_message", getattr(task.msg, "raw_message", ""))
+        )
+        try:
+            result = await asyncio.to_thread(
+                run_forward_graph,
+                ts=ts,
+                group_id=group_id,
+                user_id=user_id,
+                user_name=user_name,
+                cleaned_message=cleaned_message,
+            )
+            if result.get("should_forward"):
+                await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
+            print(
+                "[FORWARD] "
+                f"group={group_id} user={user_id} should_forward={bool(result.get('should_forward'))} "
+                f"reason={result.get('reason', '')}"
+            )
+        except Exception as error:
+            print(f"[FORWARD-ERROR] group={group_id} user={user_id} error={error}")
     elif task.type == TaskType.GROUPNOTE:
         print("回复")
     else:

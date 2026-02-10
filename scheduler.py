@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from ncatbot.core import GroupMessage, PrivateMessage
 from time import time
 import logging
-from bot import allowed_id,urgent_keywords,normal_keywords
+from bot import allowed_id,urgent_keywords
 from workflows.summary import build_summary_chunks_from_log_lines
+from workflows.forward import get_forward_monitor_group_ids
 
 
 class TaskPriority(IntEnum):
@@ -141,14 +142,14 @@ async def processmsg(msg: GroupMessage):
         )
 
     msg.raw_message = cleaned_message
+
     if msg.group_id not in allowed_id:#不在范围内
         return #直接忽略，不加入队列
     if any(keyword in cleaned_message for keyword in urgent_keywords):#RT
         await scheduler.RTpush(msg,TaskType.GROUPNOTE)  #加入实时队列
-    elif any(keyword in cleaned_message for keyword in normal_keywords):#IDLE
-        await scheduler.push(msg,TaskType.FROWARD)
     else:
         return #不包含关键词的消息不加入队列
+
 
 
 async def process_private_msg(msg: PrivateMessage):
@@ -256,6 +257,26 @@ def _extract_message_ts(msg: GroupMessage | PrivateMessage) -> str:
             pass
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
+
+async def enqueue_forward_by_monitor_group(msg: GroupMessage) -> bool:
+    """按 forward 配置中的监控群号投递转发任务。"""
+    monitor_group_ids = get_forward_monitor_group_ids()
+    if str(getattr(msg, "group_id", "")) not in monitor_group_ids:
+        return False
+
+    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
+    ts = _extract_message_ts(msg)
+    user_name = _extract_user_name(msg)
+    forward_msg = SimpleNamespace(
+        raw_message=cleaned_message,
+        cleaned_message=cleaned_message,
+        group_id=str(getattr(msg, "group_id", "")),
+        user_id=str(getattr(msg, "user_id", "unknown")),
+        user_name=user_name,
+        ts=ts,
+    )
+    await scheduler.push(forward_msg, TaskType.FROWARD)
+    return True
 
 def _extract_user_name(msg: GroupMessage | PrivateMessage) -> str:
     """提取发送者昵称，优先群名片，其次 QQ 昵称。"""

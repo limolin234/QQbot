@@ -29,6 +29,7 @@ forward_config:
   file_name: forward.py
   config:
     model: gpt-4o-mini
+    temperature: 0.0
     monitor_group_qq_number:
     # monitor_group_qq_number： 监视需要转发消息的群里（一般是重要通知群）
     # 是一个列表。 用 - 来逐个表示
@@ -37,3 +38,20 @@ forward_config:
     # - "群号2"
       - "1075786046"
 
+    # forward_decision_prompt：判断“该消息是否值得转发给主人”的规则。
+    # 你可以按自己的需求直接改这段提示词。
+    forward_decision_prompt: |
+      你是消息转发判定助手。请判断输入消息是否需要转发给主人。
+
+      建议转发的典型场景：
+      1) 明确通知/截止时间/变更安排。
+      2) 与学习/工作任务直接相关的关键信息。
+      3) 需要主人尽快知晓或决策的事项。
+
+      可不转发的典型场景：
+      1) 闲聊、玩笑、无实际行动信息。
+      2) 重复消息、无新信息的附和。
+      3) 与主人无关或价值很低的内容。
+
+      仅返回 JSON：
+      {"should_forward": true/false, "reason": "简短理由"}

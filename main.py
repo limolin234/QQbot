@@ -21,6 +21,7 @@ async def on_private_message(msg: PrivateMessage):
 @bot.group_event()# type: ignore
 async def on_group_message(msg: GroupMessage):
     await scheduler.processmsg(msg)
+    await scheduler.enqueue_forward_by_monitor_group(msg)
     
 @bot.startup_event()# type: ignore
 async def on_startup(*args):
