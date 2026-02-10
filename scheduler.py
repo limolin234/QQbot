@@ -1,6 +1,7 @@
 import asyncio,heapq,os,re
 from collections import defaultdict
 from enum import IntEnum
+from types import SimpleNamespace
 from ncatbot.core import GroupMessage
 from time import time
 import logging
@@ -185,8 +186,7 @@ async def daily_summary():
 
         final_chunks = _merge_small_chunks(grouped_chunks, chunk_size)
         for chunk in final_chunks:
-            msg = GroupMessage()  # type: ignore
-            msg.raw_message = chunk
+            msg = SimpleNamespace(raw_message=chunk)
             await scheduler.push(msg, TaskType.SUMMARY)
 
         print(
