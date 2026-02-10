@@ -9,13 +9,7 @@ logs
 data
 plugins
 
-lml_version/*
-!lml_version/main.py
-!lml_version/scheduler.py
-!lml_version/handler.py
-!lml_version/bot.py.example
-!lml_version/agent_requests.md
-!lml_version/main.py
+bot.py
 
 logs/message_handler.log
 
