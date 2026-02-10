@@ -38,12 +38,12 @@
 ### 核心处理机制
 
 1. 通过 `allowed_id` 对原始消息进行 QC（质量控制），过滤不需要处理的消息源，节省 token 开销
-2. 所有消息写入 `message.jsonl`（JSONL）日志文件
+2. 所有消息写入 `today.log` 日志文件
 3. `bot.py` 中使用两个队列：`urgent` 队列（紧急消息）和 `normal` 队列（普通消息）
 4. 根据预设的 `urgent_keywords` 判断消息是否为紧急消息，匹配则进入 `urgent` 队列
 5. 根据预设的 `normal_keywords` 判断消息是否需要转发，匹配则进入 `normal` 队列
 6. 其他消息直接写入日志，不进入队列
-7. 每晚 22:00 触发定时任务，从 `message.jsonl` 中提取当日消息（限制 10K 字符），推送到 `normal` 队列进行总结
+7. 每晚 22:00 触发定时任务，从 `today.log` 中提取当日消息（限制 10K token），推送到 `normal` 队列进行总结
 8. 多个 `worker` 线程从队列中 `pop` 消息并调用 `handle_task` 进行处理
 
 ### 消息处理流程图
@@ -54,7 +54,7 @@
     PreProcess --> CheckAllowed{是否在<br/>allowed_id群组?}
     
     CheckAllowed -->|否| Discard([丢弃消息])
-    CheckAllowed -->|是| WriteLog[写入message.jsonl(JSONL)]
+    CheckAllowed -->|是| WriteLog[写入today.log文件]
     
     WriteLog --> MatchKeyword{关键词匹配}
     
@@ -63,7 +63,7 @@
     MatchKeyword -->|无匹配| Continue([继续记录])
     
     DailyCheck{是否22:00?}
-    DailyCheck -->|是| BatchProcess[读取message.jsonl<br/>按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
+    DailyCheck -->|是| BatchProcess[读取today.log<br/>按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
     DailyCheck -->|否| WaitNext[等待下一天处理]
     BatchProcess --> QueueBuffer
     
@@ -148,7 +148,7 @@
 2. 设置 `allowed_id` 白名单，指定允许处理的 QQ 号或群号
 3. 配置 `urgent_keywords` 和 `normal_keywords` 关键词列表
 4. 设置 AI API 密钥和模型参数
-5. 配置日志文件路径（默认为 `message.jsonl`）
+5. 配置日志文件路径（默认为 `today.log`）
 
 ### 运行方式
 
