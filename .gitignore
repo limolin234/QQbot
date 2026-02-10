@@ -10,6 +10,7 @@ data
 plugins
 
 bot.py
+config.yaml
 
 logs/message_handler.log
 
