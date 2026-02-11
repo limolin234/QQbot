@@ -7,6 +7,7 @@ from ncatbot.core import GroupMessage, PrivateMessage
 from time import time
 import logging
 from bot import allowed_id,urgent_keywords
+from workflows.agent_observe import observe_agent_event
 from workflows.summary import build_summary_chunks_from_log_lines
 from workflows.forward import get_forward_monitor_group_ids
 from workflows.auto_reply import get_auto_reply_monitor_numbers, get_auto_reply_runtime_config
@@ -186,13 +187,27 @@ async def auto_reply_pending_worker() -> None:
         due_payloads: list[dict[str, str]] = []
 
         async with _auto_reply_state_lock:
-            for state in _auto_reply_session_states.values():
+            for session_key, state in _auto_reply_session_states.items():
                 pending_payload = state.get("pending_payload")
                 if not isinstance(pending_payload, dict):
                     continue
 
                 pending_since = float(state.get("pending_since", now) or now)
                 if pending_expire > 0 and (now - pending_since) > pending_expire:
+                    observe_agent_event(
+                        agent_name="auto_reply",
+                        task_type="AUTO_REPLY",
+                        stage="throttle_pending_expired",
+                        chat_type=str(pending_payload.get("chat_type", "")),
+                        group_id=str(pending_payload.get("group_id", "")),
+                        user_id=str(pending_payload.get("user_id", "")),
+                        user_name=str(pending_payload.get("user_name", "")),
+                        ts=str(pending_payload.get("ts", "")),
+                        extra={
+                            "session": session_key,
+                            "pending_age_seconds": int(now - pending_since),
+                        },
+                    )
                     state["pending_payload"] = None
                     state["pending_since"] = 0.0
                     state["pending_count"] = 0
@@ -202,6 +217,20 @@ async def auto_reply_pending_worker() -> None:
                 if now < next_allowed_at:
                     continue
 
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="throttle_pending_flush",
+                    chat_type=str(pending_payload.get("chat_type", "")),
+                    group_id=str(pending_payload.get("group_id", "")),
+                    user_id=str(pending_payload.get("user_id", "")),
+                    user_name=str(pending_payload.get("user_name", "")),
+                    ts=str(pending_payload.get("ts", "")),
+                    extra={
+                        "session": session_key,
+                        "pending_count": int(state.get("pending_count", 0) or 0),
+                    },
+                )
                 due_payloads.append(pending_payload)
                 state["pending_payload"] = None
                 state["pending_since"] = 0.0
@@ -414,6 +443,21 @@ async def enqueue_auto_reply_if_monitored(
         and bool(runtime_config.get("bypass_cooldown_when_at_bot", True))
         and _hit_at_bot(original_raw_message, str(runtime_config.get("bot_qq", "")))
     )
+    if bypass_cooldown:
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="throttle_bypass_cooldown",
+            chat_type=target_chat_type,
+            group_id=auto_reply_payload["group_id"],
+            user_id=auto_reply_payload["user_id"],
+            user_name=auto_reply_payload["user_name"],
+            ts=auto_reply_payload["ts"],
+            extra={
+                "session": f"{target_chat_type}:{monitor_value}",
+                "reason": "at_bot",
+            },
+        )
 
     enqueue_now = True
     if min_reply_interval > 0 and not bypass_cooldown:
@@ -436,6 +480,21 @@ async def enqueue_auto_reply_if_monitored(
                 state["pending_count"] = min(previous_count + 1, pending_max_messages)
                 if not float(state.get("pending_since", 0.0) or 0.0):
                     state["pending_since"] = now
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="throttle_queued_pending",
+                    chat_type=target_chat_type,
+                    group_id=auto_reply_payload["group_id"],
+                    user_id=auto_reply_payload["user_id"],
+                    user_name=auto_reply_payload["user_name"],
+                    ts=auto_reply_payload["ts"],
+                    extra={
+                        "session": session_key,
+                        "pending_count": int(state.get("pending_count", 0) or 0),
+                        "cooldown_left_seconds": max(int(next_allowed_at - now), 0),
+                    },
+                )
                 enqueue_now = False
             else:
                 state["next_allowed_at"] = now + min_reply_interval
@@ -444,6 +503,20 @@ async def enqueue_auto_reply_if_monitored(
                 state["pending_count"] = 0
 
     if enqueue_now:
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="throttle_enqueue_now",
+            chat_type=target_chat_type,
+            group_id=auto_reply_payload["group_id"],
+            user_id=auto_reply_payload["user_id"],
+            user_name=auto_reply_payload["user_name"],
+            ts=auto_reply_payload["ts"],
+            extra={
+                "session": f"{target_chat_type}:{monitor_value}",
+                "cooldown_seconds": min_reply_interval,
+            },
+        )
         await scheduler.push(_payload_to_auto_reply_message(auto_reply_payload), TaskType.AUTO_REPLY)
     return True
 
