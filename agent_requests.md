@@ -25,12 +25,12 @@
 #### 处理流程
 
 1. 收到的**allowed_id中的群的**消息首先的raw_message会经过正则识别和替换去除图片等用的[QC]这样的表达 节省token和储存
-2. 匹配的写入today.log文件中
+2. 匹配的写入message.jsonl(JSONL)文件中（记录 ts/group_id/user_id/user_name/chat_type/cleaned_message）
 3. 随后匹配的消息会经过 bot.py 中的 urgent 和 normal关键词匹配
 4. urgent_keywords匹配将作为urgent任务直接加入队列
 5. normal_keywords匹配作为normal任务直接加入队列
 6. 都不匹配的再做处理
-7. 每天22：00 将自动将today.log中的内容每10K字一组push到队列中处理(使用锁保护和零时文件替换 能保证安全 处理期间的信息留给下一天处理)
+7. 每天22：00 将自动将message.jsonl中的内容每10K字一组push到队列中处理(使用锁保护和临时文件替换，处理期间的新消息留给下一轮)
 8. worker()会pop任务然后阻塞的调用handle_task()处理任务
 
 ```mermaid
@@ -39,7 +39,7 @@
     PreProcess --> CheckAllowed{是否在<br/>allowed_id群组?}
     
     CheckAllowed -->|否| Discard([丢弃消息])
-    CheckAllowed -->|是| WriteLog[写入today.log文件]
+    CheckAllowed -->|是| WriteLog[写入message.jsonl(JSONL)]
     
     WriteLog --> MatchKeyword{关键词匹配}
     
@@ -48,7 +48,7 @@
     MatchKeyword -->|无匹配| Continue([继续记录])
     
     DailyCheck{是否22:00?}
-    DailyCheck -->|是| BatchProcess[读取today.log<br/>按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
+    DailyCheck -->|是| BatchProcess[读取message.jsonl<br/>按10K字分组<br/>批量push到队列<br/>SUMMARY类型]
     DailyCheck -->|否| WaitNext[等待下一天处理]
     BatchProcess --> QueueBuffer
     

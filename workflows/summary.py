@@ -2,7 +2,7 @@
 Summary 工作流中的预处理与 LangGraph 汇总模块。
 
 职责：
-1) 解析 scheduler 生成的 `[group:...][user:...]` 来源块。
+1) 解析 scheduler 生成的 `[group:...][user:...][name:...]` 来源块。
 2) 清洗行文本（去空、截断、去重、限制最大行数）。
 3) 通过最少节点的 LangGraph 执行 summary（Map -> Finalize）。
 
@@ -16,12 +16,9 @@ Summary 工作流中的预处理与 LangGraph 汇总模块。
 处理链路：
 raw_message
   -> preprocess_summary_chunk
-    -> _normalize_raw_message
     -> _parse_blocks
     -> _collect_normalized_lines
-    -> _build_chunk
   -> prepare_summary_payload
-    -> _build_stats
     -> SummaryWorkflowPayload
   -> run_summary_graph
     -> map_node (LLM with structured output)
@@ -34,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
 from typing import Any, TypedDict
+import json
 import os
 import re
 
@@ -41,6 +39,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
+
+from .agent_config_loader import load_current_agent_config
 
 try:
     from dotenv import load_dotenv
@@ -50,13 +50,36 @@ except Exception:  # pragma: no cover
 
 UNKNOWN_GROUP = "unknown_group"
 UNKNOWN_USER = "unknown_user"
-DEFAULT_MAX_LINE_CHARS = 300
-DEFAULT_MAX_LINES = 500
-DEFAULT_LLM_MODEL = "gpt-4o-mini"
-HEADER_RE = re.compile(r"^\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\]$")
+UNKNOWN_CHAT = "group"
+SUMMARY_CURSOR_PATH = "data/summary_cursor.json"
+
+SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
 
 
-SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消息总结成可执行日报。
+try:
+    DEFAULT_MAX_LINE_CHARS = int(SUMMARY_AGENT_CONFIG.get("max_line_chars", 300))
+except (TypeError, ValueError):
+    DEFAULT_MAX_LINE_CHARS = 300
+
+try:
+    DEFAULT_MAX_LINES = int(SUMMARY_AGENT_CONFIG.get("max_lines", 500))
+except (TypeError, ValueError):
+    DEFAULT_MAX_LINES = 500
+
+DEFAULT_LLM_MODEL = str(SUMMARY_AGENT_CONFIG.get("model") or "gpt-4o-mini")
+try:
+    DEFAULT_LLM_TEMPERATURE = float(SUMMARY_AGENT_CONFIG.get("temperature", 0.2))
+except (TypeError, ValueError):
+    DEFAULT_LLM_TEMPERATURE = 0.2
+
+
+HEADER_RE = re.compile(
+    r"^(?:\[chat:(?P<chat_type>[^\]]+)\])?\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\](?:\[name:(?P<user_name>[^\]]+)\])?$"
+)
+TIME_PREFIX_RE = re.compile(r"^\[(?P<hhmm>\d{2}:\d{2})\]\s*")
+
+
+SYSTEM_SUMMARY_PROMPT = str(SUMMARY_AGENT_CONFIG.get("system_prompt") or """你是资深项目管理助理，负责将群聊消息总结成可执行日报。
 
 # 任务目标
 - 从输入消息中提炼：整体进展、关键要点、风险、待办。
@@ -76,21 +99,23 @@ SYSTEM_SUMMARY_PROMPT = """你是资深项目管理助理，负责将群聊消�
 
 # 输出要求
 - 使用中文，简洁、客观、无修辞。
-- 严格按结构化字段返回，不要输出多余说明。"""
+- 严格按结构化字段返回，不要输出多余说明。""")
 
 
-USER_SUMMARY_PROMPT_TEMPLATE = """请总结以下单个 chunk 的消息。
+USER_SUMMARY_PROMPT_TEMPLATE = str(SUMMARY_AGENT_CONFIG.get("user_prompt_template") or """请总结以下单个 chunk 的消息。
 chunk_index: {chunk_index}
 source_count: {source_count}
 sources: {sources}
+source_details:
+{source_details}
 unique_lines: {unique_lines}
 
-输入消息（每行格式: group|user:message）：
+输入消息（每行格式: group|user:[HH:MM] message）：
 ---BEGIN_MESSAGES---
 {payload_text}
 ---END_MESSAGES---
 
-请基于以上输入，按约定结构化字段输出总结。"""
+请基于以上输入，按约定结构化字段输出总结。""")
 
 
 @dataclass
@@ -98,14 +123,18 @@ class SummaryBlock:
     """单个来源分组块。
 
     该结构直接承载来源上下文：
-    - group_id: 群来源
+    - chat_type: 消息来源类型（group/private）
+    - group_id: 群来源（私聊时为 private）
     - user_id: 发送者来源
+    - user_name: 发送者昵称（群名片优先）
     - lines: 该来源块下的原始行
     """
 
+    chat_type: str
     group_id: str
     user_id: str
     lines: list[str]
+    user_name: str = UNKNOWN_USER
 
 
 @dataclass
@@ -170,6 +199,7 @@ class SummaryFinalResult:
     chunk_count: int = 0
     message_count: int = 0
     sources: list[str] = field(default_factory=list)
+    trace_lines: list[str] = field(default_factory=list)
     map_results: list[SummaryMapResult] = field(default_factory=list)
     elapsed_ms: float = 0.0
 
@@ -194,6 +224,187 @@ class SummaryGraphState(TypedDict):
     final_result: SummaryFinalResult | None
 
 
+def build_summary_chunks_from_log_lines(
+    lines: list[str],
+    *,
+    chunk_size: int,
+    run_mode: str,
+) -> tuple[list[str], dict[str, str]]:
+    """从日志原始行构建 summary chunks（解析+筛选+分块）。"""
+    records: list[dict[str, str]] = []
+    for line in lines:
+        group_id, user_id, user_name, ts, message, chat_type = parse_summary_log_line(line)
+        records.append(
+            {
+                "group_id": group_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "ts": ts,
+                "message": message,
+                "chat_type": chat_type,
+            }
+        )
+
+    filtered_records, meta = filter_records_for_summary(records, run_mode=run_mode)
+    if not filtered_records:
+        return [], meta
+
+    grouped_messages: dict[tuple[str, str, str, str], list[tuple[str, str]]] = {}
+    for record in filtered_records:
+        chat_type = _normalize_chat_type(record.get("chat_type", "group"))
+        group_id = str(record.get("group_id", UNKNOWN_GROUP))
+        user_id = str(record.get("user_id", UNKNOWN_USER))
+        user_name = str(record.get("user_name", UNKNOWN_USER))
+        ts = str(record.get("ts", ""))
+        message = str(record.get("message", "")).strip()
+        if not message:
+            continue
+        key = (chat_type, group_id, user_id, user_name)
+        if key not in grouped_messages:
+            grouped_messages[key] = []
+        grouped_messages[key].append((ts, message))
+
+    grouped_chunks: list[str] = []
+    for (chat_type, group_id, user_id, user_name), messages in grouped_messages.items():
+        grouped_chunks.extend(
+            _split_source_messages(
+                chat_type=chat_type,
+                group_id=group_id,
+                user_id=user_id,
+                user_name=user_name,
+                messages=messages,
+                chunk_size=chunk_size,
+            )
+        )
+
+    final_chunks = _merge_small_chunks(grouped_chunks, chunk_size)
+    if meta.get("run_mode") == "manual" and meta.get("cursor_key") and meta.get("cursor_after"):
+        save_summary_cursor(str(meta["cursor_key"]), str(meta["cursor_after"]))
+
+    meta["group_count"] = str(len(grouped_messages))
+    meta["group_chunks"] = str(len(grouped_chunks))
+    meta["final_chunks"] = str(len(final_chunks))
+    return final_chunks, meta
+
+
+def filter_records_for_summary(
+    records: list[dict[str, str]],
+    *,
+    run_mode: str,
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    """按 chat scope + cursor 筛选日志记录。"""
+    scope = _normalize_scope(str(SUMMARY_AGENT_CONFIG.get("summary_chat_scope") or "group"))
+    cursor_key = f"manual_{scope}"
+    cursor_before = ""
+    normalized_run_mode = str(run_mode or "manual").strip().lower()
+    if normalized_run_mode not in {"manual", "auto"}:
+        normalized_run_mode = "manual"
+
+    use_cursor = normalized_run_mode == "manual"
+    today_str = datetime.now().astimezone().strftime("%Y-%m-%d")
+
+    if use_cursor:
+        cursor_before = load_summary_cursor(cursor_key)
+
+    cursor_dt = _parse_iso_dt(cursor_before) if cursor_before else None
+    filtered_records: list[dict[str, str]] = []
+    latest_dt = cursor_dt
+
+    for record in records:
+        chat_type = _normalize_chat_type(record.get("chat_type", "group"))
+        if scope != "all" and chat_type != scope:
+            continue
+
+        ts = str(record.get("ts", "")).strip()
+        current_dt = _parse_iso_dt(ts)
+        if normalized_run_mode == "auto":
+            if current_dt is None or current_dt.astimezone().strftime("%Y-%m-%d") != today_str:
+                continue
+
+        if use_cursor and cursor_dt is not None:
+            if current_dt is None or current_dt <= cursor_dt:
+                continue
+
+        if current_dt is not None and (latest_dt is None or current_dt > latest_dt):
+            latest_dt = current_dt
+
+        normalized = dict(record)
+        normalized["chat_type"] = chat_type
+        normalized["message"] = str(record.get("message", "")).strip()
+        filtered_records.append(normalized)
+
+    cursor_after = ""
+    if latest_dt is not None:
+        cursor_after = latest_dt.isoformat(timespec="seconds")
+    elif cursor_before:
+        cursor_after = cursor_before
+
+    return filtered_records, {
+        "run_mode": normalized_run_mode,
+        "scope": scope,
+        "cursor_key": cursor_key,
+        "cursor_before": cursor_before,
+        "cursor_after": cursor_after,
+    }
+
+
+def parse_summary_log_line(line: str) -> tuple[str, str, str, str, str, str]:
+    """解析 summary 日志行，兼容 JSONL 与旧文本格式。"""
+    try:
+        record = json.loads(line)
+        if isinstance(record, dict):
+            return (
+                str(record.get("group_id", UNKNOWN_GROUP)),
+                str(record.get("user_id", UNKNOWN_USER)),
+                str(record.get("user_name", UNKNOWN_USER)),
+                str(record.get("ts", "")),
+                str(record.get("cleaned_message", record.get("raw_message", ""))).strip(),
+                _normalize_chat_type(record.get("chat_type", "group")),
+            )
+    except json.JSONDecodeError:
+        pass
+
+    if ":" not in line:
+        return UNKNOWN_GROUP, UNKNOWN_USER, UNKNOWN_USER, "", line.strip(), "group"
+
+    prefix, message = line.split(":", 1)
+    if "|" in prefix:
+        group_id, user_id = prefix.split("|", 1)
+        normalized_user_id = user_id.strip() or UNKNOWN_USER
+        return group_id.strip() or UNKNOWN_GROUP, normalized_user_id, normalized_user_id, "", message.strip(), "group"
+
+    return prefix.strip() or UNKNOWN_GROUP, UNKNOWN_USER, UNKNOWN_USER, "", message.strip(), "group"
+
+
+def load_summary_cursor(cursor_key: str) -> str:
+    if not os.path.exists(SUMMARY_CURSOR_PATH):
+        return ""
+    try:
+        with open(SUMMARY_CURSOR_PATH, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get(cursor_key, "")).strip()
+
+
+def save_summary_cursor(cursor_key: str, ts: str) -> None:
+    os.makedirs(os.path.dirname(SUMMARY_CURSOR_PATH), exist_ok=True)
+    payload: dict[str, Any] = {}
+    if os.path.exists(SUMMARY_CURSOR_PATH):
+        try:
+            with open(SUMMARY_CURSOR_PATH, "r", encoding="utf-8") as file:
+                existing = json.load(file)
+            if isinstance(existing, dict):
+                payload.update(existing)
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+    payload[cursor_key] = ts
+    with open(SUMMARY_CURSOR_PATH, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
 def preprocess_summary_chunk(
     raw_message: str,
     *,
@@ -202,7 +413,7 @@ def preprocess_summary_chunk(
 ) -> SummaryChunk:
     """预处理 SUMMARY 队列消息，兼容 scheduler 的分组头部格式。"""
     started_at = perf_counter()
-    raw_text = _normalize_raw_message(raw_message)
+    raw_text = raw_message if isinstance(raw_message, str) else str(raw_message or "")
     raw_lines = raw_text.splitlines()
     blocks = _parse_blocks(raw_lines)
 
@@ -212,13 +423,19 @@ def preprocess_summary_chunk(
         max_lines=max_lines,
     )
 
-    return _build_chunk(
+    output_text = "\n".join(normalized_lines)
+    elapsed_ms = (perf_counter() - started_at) * 1000
+    return SummaryChunk(
         raw_text=raw_text,
         blocks=blocks,
-        deduped_lines=normalized_lines,
+        texts=normalized_lines,
+        text=output_text,
         total_lines=len(raw_lines),
         non_empty_lines=non_empty_lines,
-        started_at=started_at,
+        unique_lines=len(normalized_lines),
+        block_count=len(blocks),
+        output_chars=len(output_text),
+        elapsed_ms=elapsed_ms,
     )
 
 
@@ -238,7 +455,14 @@ def prepare_summary_payload(
         lines=chunk.texts,
         text=chunk.text,
         blocks=chunk.blocks,
-        stats=_build_stats(chunk),
+        stats={
+            "total_lines": chunk.total_lines,
+            "non_empty_lines": chunk.non_empty_lines,
+            "unique_lines": chunk.unique_lines,
+            "block_count": chunk.block_count,
+            "output_chars": chunk.output_chars,
+            "elapsed_ms": chunk.elapsed_ms,
+        },
     )
 
 
@@ -247,7 +471,7 @@ def run_summary_graph(
     *,
     chunk_index: int = 1,
     model_name: str | None = None,
-    temperature: float = 0.2,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
 ) -> SummaryFinalResult:
     """运行 summary 的 LangGraph 核心流程（当前为最少节点两步）。
 
@@ -283,14 +507,19 @@ def format_summary_message(result: SummaryFinalResult) -> str:
     highlights = _safe_list(result.highlights, max_items=6)
     risks = _safe_list(result.risks, max_items=5)
     todos = _safe_list(result.todos, max_items=5)
+    trace_lines = _safe_list(result.trace_lines, max_items=20)
+    if not trace_lines and result.sources:
+        trace_lines = [f"来源标识：{', '.join(result.sources)}"]
 
     highlight_text = "\n".join(f"- {item}" for item in highlights) or "- （暂无）"
     risk_text = "\n".join(f"- {item}" for item in risks) or "- （暂无）"
     todo_text = "\n".join(f"- {item}" for item in todos) or "- （暂无）"
+    trace_text = "\n".join(f"- {item}" for item in trace_lines) or "- （暂无）"
 
     return (
         f"【每日总结 {date_text}】\n"
         f"概览：{result.overview or '（暂无概览）'}\n\n"
+        f"【溯源】\n{trace_text}\n\n"
         f"【关键要点】\n{highlight_text}\n\n"
         f"【风险】\n{risk_text}\n\n"
         f"【待办】\n{todo_text}\n\n"
@@ -322,13 +551,7 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
             return {"map_result": empty_result, "llm_calls": state["llm_calls"]}
 
         structured_llm = llm.with_structured_output(ChunkSummarySchema)
-        source_refs = sorted(
-            {
-                f"{block.group_id}|{block.user_id}"
-                for block in payload.blocks
-                if block.group_id or block.user_id
-            }
-        )
+        source_refs, source_details, _trace_lines = _analyze_blocks(payload.blocks)
         messages = [
             SystemMessage(
                 content=SYSTEM_SUMMARY_PROMPT
@@ -338,6 +561,7 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
                     chunk_index=chunk_index,
                     source_count=len(source_refs),
                     sources=", ".join(source_refs) if source_refs else "(none)",
+                    source_details="\n".join(source_details) if source_details else "(none)",
                     unique_lines=payload.stats.get("unique_lines", 0),
                     payload_text=payload.text,
                 )
@@ -366,11 +590,7 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
                 overview="今日暂无可总结内容。",
             )
 
-        source_set = {
-            f"{block.group_id}|{block.user_id}"
-            for block in payload.blocks
-            if block.group_id or block.user_id
-        }
+        source_refs, _source_details, trace_lines = _analyze_blocks(payload.blocks)
         final_result = SummaryFinalResult(
             date=datetime.now().strftime("%Y-%m-%d"),
             overview=map_result.overview,
@@ -379,7 +599,8 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
             todos=map_result.todos,
             chunk_count=1,
             message_count=int(payload.stats.get("unique_lines", 0)),
-            sources=sorted(source_set),
+            sources=source_refs,
+            trace_lines=trace_lines,
             map_results=[map_result],
         )
         return {"final_result": final_result}
@@ -397,7 +618,8 @@ def _build_llm(*, model_name: str | None, temperature: float) -> ChatOpenAI:
     """
     给Agent接入LLM
     """
-    _load_env_if_possible()
+    if load_dotenv is not None:
+        load_dotenv(override=False)
 
     api_key = os.getenv("LLM_API_KEY")
     if not api_key:
@@ -417,21 +639,6 @@ def _build_llm(*, model_name: str | None, temperature: float) -> ChatOpenAI:
     return ChatOpenAI(**llm_kwargs)
 
 
-def _load_env_if_possible() -> None:
-    """
-    读取.env文件
-    （其实这个函数根本没必要。AI写的）
-    """
-    if load_dotenv is not None:
-        load_dotenv(override=False)
-
-
-def _normalize_raw_message(raw_message: str) -> str:
-    if isinstance(raw_message, str):
-        return raw_message
-    return str(raw_message or "")
-
-
 def _collect_normalized_lines(
     *,
     blocks: list[SummaryBlock],
@@ -449,7 +656,8 @@ def _collect_normalized_lines(
                 continue
 
             non_empty_lines += 1
-            cleaned = _truncate_text(cleaned, max_line_chars)
+            if len(cleaned) > max_line_chars:
+                cleaned = cleaned[: max_line_chars - 1] + "…"
             normalized = f"{block.group_id}|{block.user_id}:{cleaned}"
 
             if normalized in seen:
@@ -464,16 +672,12 @@ def _collect_normalized_lines(
     return deduped_lines, non_empty_lines
 
 
-def _truncate_text(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 1] + "…"
-
-
 def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
     blocks: list[SummaryBlock] = []
+    current_chat = UNKNOWN_CHAT
     current_group = UNKNOWN_GROUP
     current_user = UNKNOWN_USER
+    current_user_name = UNKNOWN_USER
     current_lines: list[str] = []
     saw_content = False
 
@@ -481,8 +685,10 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
         nonlocal current_lines
         blocks.append(
             SummaryBlock(
+                chat_type=current_chat,
                 group_id=current_group,
                 user_id=current_user,
+                user_name=current_user_name,
                 lines=current_lines,
             )
         )
@@ -493,15 +699,21 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
         if header:
             if saw_content:
                 flush()
+            parsed_chat = (header.group("chat_type") or "").strip().lower()
+            current_chat = _normalize_chat_type(parsed_chat)
             current_group = header.group("group_id").strip() or UNKNOWN_GROUP
             current_user = header.group("user_id").strip() or UNKNOWN_USER
+            parsed_user_name = (header.group("user_name") or "").strip()
+            current_user_name = parsed_user_name or current_user
             current_lines = []
             saw_content = True
             continue
 
         if not saw_content:
+            current_chat = UNKNOWN_CHAT
             current_group = UNKNOWN_GROUP
             current_user = UNKNOWN_USER
+            current_user_name = UNKNOWN_USER
             current_lines = []
             saw_content = True
 
@@ -513,40 +725,81 @@ def _parse_blocks(lines: list[str]) -> list[SummaryBlock]:
     return blocks
 
 
-def _build_chunk(
-    *,
-    raw_text: str,
-    blocks: list[SummaryBlock],
-    deduped_lines: list[str],
-    total_lines: int,
-    non_empty_lines: int,
-    started_at: float,
-) -> SummaryChunk:
-    output_text = "\n".join(deduped_lines)
-    elapsed_ms = (perf_counter() - started_at) * 1000
-    return SummaryChunk(
-        raw_text=raw_text,
-        blocks=blocks,
-        texts=deduped_lines,
-        text=output_text,
-        total_lines=total_lines,
-        non_empty_lines=non_empty_lines,
-        unique_lines=len(deduped_lines),
-        block_count=len(blocks),
-        output_chars=len(output_text),
-        elapsed_ms=elapsed_ms,
-    )
+def _analyze_blocks(blocks: list[SummaryBlock]) -> tuple[list[str], list[str], list[str]]:
+    """单次遍历 blocks，统一生成来源引用/细节/溯源文案。"""
+    source_ref_set: set[str] = set()
+    source_details: list[str] = []
+    group_summary: dict[str, dict[str, Any]] = {}
 
+    for block in blocks:
+        chat_type = _normalize_chat_type(block.chat_type)
+        group_id = block.group_id or UNKNOWN_GROUP
+        user_id = block.user_id or UNKNOWN_USER
+        user_name = (block.user_name or "").strip() or user_id
 
-def _build_stats(chunk: SummaryChunk) -> dict[str, float | int]:
-    return {
-        "total_lines": chunk.total_lines,
-        "non_empty_lines": chunk.non_empty_lines,
-        "unique_lines": chunk.unique_lines,
-        "block_count": chunk.block_count,
-        "output_chars": chunk.output_chars,
-        "elapsed_ms": chunk.elapsed_ms,
-    }
+        source_ref_set.add(f"{chat_type}|{group_id}|{user_id}")
+        source_details.append(
+            f"- chat={chat_type}, group={group_id}, user={user_id}, name={user_name}, lines={len(block.lines)}"
+        )
+
+        group_key = f"{chat_type}:{group_id}"
+        group_entry = group_summary.setdefault(
+            group_key,
+            {
+                "chat_type": chat_type,
+                "group_id": group_id,
+                "senders": set(),
+                "times": [],
+                "message_count": 0,
+            },
+        )
+        sender_ref = f"{user_name}({user_id})" if user_id else user_name
+        group_entry["senders"].add(sender_ref)
+
+        for line in block.lines:
+            cleaned = line.strip()
+            if not cleaned:
+                continue
+            group_entry["message_count"] += 1
+
+            match = TIME_PREFIX_RE.match(cleaned)
+            hhmm = match.group("hhmm") if match else ""
+            if hhmm:
+                group_entry["times"].append(hhmm)
+
+    trace_lines: list[str] = []
+    for group_key in sorted(group_summary.keys()):
+        entry = group_summary[group_key]
+        senders = sorted(entry["senders"])
+        if not senders:
+            sender_text = "未知发送者"
+        elif len(senders) <= 3:
+            sender_text = "、".join(senders)
+        else:
+            sender_text = f"{'、'.join(senders[:3])} 等{len(senders)}人"
+
+        normalized_times = sorted({time_text for time_text in entry["times"] if time_text})
+        if not normalized_times:
+            time_text = "时间未知"
+        elif len(normalized_times) == 1:
+            time_text = f"今天{normalized_times[0]}"
+        else:
+            time_text = f"今天{normalized_times[0]}~{normalized_times[-1]}"
+
+        source_label = (
+            f"私聊({entry['group_id']})"
+            if entry.get("chat_type") == "private"
+            else f"{entry['group_id']}群"
+        )
+        trace_lines.append(
+            f"{source_label}主要说了 {entry['message_count']} 条消息，来自 {sender_text}，发送时间为{time_text}"
+        )
+
+    source_refs = sorted(source_ref_set)
+    if not trace_lines and source_refs:
+        trace_lines = [f"来源标识：{', '.join(source_refs)}"]
+
+    return source_refs, source_details, trace_lines
 
 
 def _safe_list(items: list[str], *, min_items: int = 0, max_items: int = 999) -> list[str]:
@@ -555,3 +808,93 @@ def _safe_list(items: list[str], *, min_items: int = 0, max_items: int = 999) ->
     if len(deduped) < min_items:
         return deduped
     return deduped[:max_items]
+
+
+def _split_source_messages(
+    *,
+    chat_type: str,
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    messages: list[tuple[str, str]],
+    chunk_size: int,
+) -> list[str]:
+    safe_name = (user_name or UNKNOWN_USER).replace("]", "）")
+    header = (
+        f"[chat:{_normalize_chat_type(chat_type)}]"
+        f"[group:{group_id}][user:{user_id}][name:{safe_name}]"
+    )
+    max_body_chars = max(1, chunk_size - len(header) - 1)
+    chunks: list[str] = []
+    current_body = ""
+
+    for ts, message in messages:
+        dt = _parse_iso_dt(ts)
+        time_prefix = dt.strftime("%H:%M") if dt is not None else ""
+        normalized_message = f"[{time_prefix}] {message}" if time_prefix else message
+        remaining = normalized_message
+        while remaining:
+            room = max_body_chars if not current_body else max_body_chars - len(current_body) - 1
+            if room <= 0:
+                chunks.append(f"{header}\n{current_body}")
+                current_body = ""
+                continue
+
+            part = remaining[:room]
+            remaining = remaining[room:]
+            current_body = part if not current_body else f"{current_body}\n{part}"
+
+            if remaining:
+                chunks.append(f"{header}\n{current_body}")
+                current_body = ""
+
+    if current_body:
+        chunks.append(f"{header}\n{current_body}")
+    if not chunks:
+        chunks.append(header)
+    return chunks
+
+
+def _merge_small_chunks(grouped_chunks: list[str], chunk_size: int) -> list[str]:
+    merged: list[str] = []
+    current = ""
+    for block in grouped_chunks:
+        if not current:
+            current = block
+            continue
+        candidate = f"{current}\n\n{block}"
+        if len(candidate) <= chunk_size:
+            current = candidate
+        else:
+            merged.append(current)
+            current = block
+    if current:
+        merged.append(current)
+    return merged
+
+
+def _normalize_chat_type(chat_type: Any) -> str:
+    text = str(chat_type or "").strip().lower()
+    if text in {"group", "private"}:
+        return text
+    return "group"
+
+
+def _normalize_scope(scope: str) -> str:
+    value = str(scope or "").strip().lower()
+    if value in {"group", "private", "all"}:
+        return value
+    return "group"
+
+
+def _parse_iso_dt(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        normalized = str(ts).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return dt
+    except ValueError:
+        return None

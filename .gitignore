@@ -1,5 +1,6 @@
 .vscode
 .claude
+.codex
 .env
 __pycache__/
 **/__pycache__/
@@ -12,5 +13,12 @@ plugins
 bot.py
 config.yaml
 
+logs/message_handler.log
+message.log
+message.jsonl
+
+*.processing
+
+message copy.jsonl
 today.log
 logs/message_handler.log

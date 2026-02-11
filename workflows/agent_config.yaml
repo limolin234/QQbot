@@ -1,0 +1,111 @@
+# 这是所有 agent 统一使用的配置文件，用于集中管理各个工作流（如 summary、forward 等）的参数设置。
+# 
+# 配置文件结构说明：
+# - 每个 agent（如 summary、forward）都有独立的配置节（以 "{}_config" 命名），包含其核心参数。
+# - 例如 summary_config 包含摘要相关的参数（如模型、最大行数、温度等），forward_config 包含消息转发相关设置（如被监视群号等）。
+# 
+# 使用方法：
+# - 可按照实际需求，在对应 config 区域调整参数，无需更改程序代码，重启程序后自动生效。
+# - 文件支持注释说明和示例，可参考或自行拓展其他 agent 配置，实现统一管理。
+# - 建议仅在明确理解参数意义后进行修改，避免配置错误导致功能异常。
+# 
+# 特别提示：
+# - 此文件一般与 workflows 目录下的 py 文件（如 summary.py、forward.py）搭配使用，参数名称需与代码保持一致。
+# - 若需添加新 agent，可参考现有格式扩展配置节。
+
+summary_config:
+  file_name: summary.py
+  config:
+    model: qwen3-max-2026-01-23
+    max_line_chars: 300
+    max_lines: 500
+    temperature: 0.2
+    
+    summary_chat_scope: group    
+    # summary_chat_scope：配置需要总结消息的范围
+    # 可选值：group(仅总结群聊消息) / private(仅私聊) / all(群聊+私聊)
+
+forward_config:
+  file_name: forward.py
+  config:
+    model: qwen3-max-2026-01-23
+    temperature: 0.0
+    monitor_group_qq_number:
+    # monitor_group_qq_number： 监视需要转发消息的群里（一般是重要通知群）
+    # 是一个列表。 用 - 来逐个表示
+    # 例如：
+    # - "群号1"
+    # - "群号2"
+      - "1075786046"
+
+    # forward_decision_prompt：判断“该消息是否值得转发给主人”的规则。
+    # 你可以按自己的需求直接改这段提示词。
+    forward_decision_prompt: |
+      你是消息转发判定助手。请判断输入消息是否需要转发给主人。
+
+      建议转发的典型场景：
+      1) 明确通知/截止时间/变更安排。
+      2) 与学习/工作任务直接相关的关键信息。
+      3) 需要主人尽快知晓或决策的事项。
+
+      可不转发的典型场景：
+      1) 闲聊、玩笑、无实际行动信息。
+      2) 重复消息、无新信息的附和。
+      3) 与主人无关或价值很低的内容。
+
+      仅返回 JSON：
+      {"should_forward": true/false, "reason": "简短理由"}
+
+auto_reply_config:
+  file_name: auto_reply.py
+  config:
+    model: qwen3-max-2026-01-23
+    temperature: 0.2
+
+    # rules：自动回复规则列表（每个元素对应一个群聊或私聊目标）
+    # 你可以按需添加多个规则，逐条匹配。
+    rules:
+      - enabled: true
+        chat_type: group
+        number: "1075786046"
+
+        # trigger_mode：触发条件逻辑表达式
+        # 可用原子条件：at_bot / keyword / always / ai_decide
+        # 逻辑运算：||（或）/ &&（且）/ !（非）/ ()（分组）
+        # 例如：at_bot || keyword
+        trigger_mode: "keyword && ai_decide"
+
+        # keywords：当 trigger_mode 使用 keyword 时生效
+        keywords:
+          - "助手"
+          - "bot"
+
+        # ai_decision_prompt：当 trigger_mode 使用 ai_decide 时生效
+        ai_decision_prompt: |
+          你是消息回复判定助手。请判断这条消息是否需要机器人主动回复。
+          判定为需要回复的典型场景：
+          1) 对机器人提出了明确问题或请求。
+          2) 需要机器人提供信息、解释、总结或执行操作。
+          可不回复的典型场景：
+          1) 纯闲聊、表情、无明确诉求。
+          2) 与机器人无关的对话。
+
+        # reply_prompt：生成回复时的系统提示词
+        reply_prompt: |
+          你是群聊里的助理机器人。
+          回复要求：
+          1) 简洁明确，优先解决用户当前问题。
+          2) 不确定时直接说明不确定，不编造信息。
+          3) 语气自然友好，默认使用中文。
+          4) 纯文本，不用markdown语言。
+
+      - enabled: true
+        chat_type: private
+        number: "3291053545"
+        trigger_mode: "always"
+        keywords: []
+        ai_decision_prompt: |
+          这是私聊场景，通常需要优先响应用户。
+        reply_prompt: |
+          你是私聊助理。
+          回答要直接、清晰、可执行。

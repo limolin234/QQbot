@@ -1,2 +1,7 @@
 ncatbot
 aiocron
+langgraph
+langchain
+langchain-core
+langchain-openai
+dotenv
