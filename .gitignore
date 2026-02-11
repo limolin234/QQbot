@@ -19,8 +19,6 @@ message.jsonl
 
 *.processing
 
-
-config.yaml
-
-bot.py
 message copy.jsonl
+today.log
+logs/message_handler.log
