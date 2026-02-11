@@ -87,7 +87,7 @@ auto_reply_config:
     # context_history_limit：最多携带多少条历史上下文
     context_history_limit: 50
     # context_max_chars：历史上下文总字符上限（超过后截断）
-    context_max_chars: 2000
+    context_max_chars: 1000
     # context_window_seconds：只读取最近 N 秒的历史消息作为上下文
     context_window_seconds: 0
     # min_reply_interval_seconds：同一会话两次自动回复的最小间隔（冷却）
