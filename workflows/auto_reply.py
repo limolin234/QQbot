@@ -13,6 +13,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from workflows.agent_observe import observe_agent_event
 from workflows.agent_config_loader import load_current_agent_config
 
 try:
@@ -51,6 +52,7 @@ class AutoReplyMessageContext:
     ts: str
     raw_message: str
     cleaned_message: str
+    run_id: str = ""
 
 
 class AutoReplyAIDecision(BaseModel):
@@ -96,31 +98,96 @@ class AutoReplyDecisionEngine:
                 continue
             matching_rules.append(rule)
 
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="rules_filtered",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            extra={"configured_rules": len(self.rules), "matched_rules": len(matching_rules)},
+        )
+
         if not matching_rules:
-            return {
+            result = {
                 "should_reply": False,
                 "reason": "未命中启用规则",
                 "matched_rule": None,
             }
+            observe_agent_event(
+                agent_name="auto_reply",
+                task_type="AUTO_REPLY",
+                stage="decision_end",
+                run_id=context.run_id,
+                chat_type=context.chat_type,
+                group_id=context.group_id,
+                user_id=context.user_id,
+                user_name=context.user_name,
+                ts=context.ts,
+                decision=result,
+            )
+            return result
 
         failure_reasons: list[str] = []
         for idx, rule in enumerate(matching_rules):
             expression = str(rule.get("trigger_mode") or "always").strip()
             ok, reason = self.evaluate_trigger_expression(expression, rule, context)
+            observe_agent_event(
+                agent_name="auto_reply",
+                task_type="AUTO_REPLY",
+                stage="rule_evaluated",
+                run_id=context.run_id,
+                chat_type=context.chat_type,
+                group_id=context.group_id,
+                user_id=context.user_id,
+                user_name=context.user_name,
+                ts=context.ts,
+                decision={"should_reply": ok, "reason": reason},
+                extra={"rule_index": idx, "trigger_mode": expression},
+            )
             if ok:
-                return {
+                result = {
                     "should_reply": True,
                     "reason": reason,
                     "matched_rule": idx,
                     "trigger_mode": expression,
                 }
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="decision_end",
+                    run_id=context.run_id,
+                    chat_type=context.chat_type,
+                    group_id=context.group_id,
+                    user_id=context.user_id,
+                    user_name=context.user_name,
+                    ts=context.ts,
+                    decision=result,
+                )
+                return result
             failure_reasons.append(f"rule#{idx}:{reason}")
 
-        return {
+        result = {
             "should_reply": False,
             "reason": "; ".join(failure_reasons) if failure_reasons else "规则未触发",
             "matched_rule": None,
         }
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="decision_end",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            decision=result,
+        )
+        return result
 
     def evaluate_trigger_expression(
         self,
@@ -244,6 +311,19 @@ class AutoReplyDecisionEngine:
         graph.add_edge("decide", END)
         app = graph.compile()
 
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="ai_decide_start",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            extra={"model": self.model},
+        )
+
         final_state = app.invoke(
             {
                 "prompt": prompt,
@@ -261,6 +341,18 @@ class AutoReplyDecisionEngine:
 
         should_reply = bool(final_state.get("should_reply", False))
         reason = str(final_state.get("reason", "")).strip()
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="ai_decide_end",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            decision={"should_reply": should_reply, "reason": reason},
+        )
         if should_reply:
             return True, reason or "ai_decide=true"
         return False, reason or "ai_decide=false"
@@ -275,6 +367,7 @@ def run_auto_reply_pipeline(
     ts: str,
     raw_message: str,
     cleaned_message: str,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """AutoReply 主处理管道：当前仅返回 should_reply 判定结果。"""
     context = AutoReplyMessageContext(
@@ -285,6 +378,7 @@ def run_auto_reply_pipeline(
         ts=str(ts),
         raw_message=str(raw_message),
         cleaned_message=str(cleaned_message),
+        run_id=str(run_id),
     )
     engine = AutoReplyDecisionEngine(AUTO_REPLY_CONFIG)
     result = engine.should_reply(context)

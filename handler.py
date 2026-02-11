@@ -1,7 +1,10 @@
 import asyncio
+from time import perf_counter
 
 from scheduler import PriorityTask, TaskType
 from bot import bot, QQnumber
+from workflows.agent_observe import generate_run_id, observe_agent_event
+from workflows.auto_reply import run_auto_reply_pipeline
 from workflows.forward import run_forward_graph
 from workflows.summary import (
     format_summary_message,
@@ -69,15 +72,88 @@ async def handle_task(task: PriorityTask):
             )
         except Exception as error:
             print(f"[FORWARD-ERROR] group={group_id} user={user_id} error={error}")
+    
     elif task.type == TaskType.AUTO_REPLY:
         ts = str(getattr(task.msg, "ts", ""))
+        chat_type = str(getattr(task.msg, "chat_type", ""))
         group_id = str(getattr(task.msg, "group_id", ""))
         user_id = str(getattr(task.msg, "user_id", ""))
         user_name = str(getattr(task.msg, "user_name", ""))
-        print(
-            "[AUTO_REPLY] "
-            f"group={group_id} user={user_name}({user_id}) ts={ts} queued"
+        raw_message = str(getattr(task.msg, "raw_message", ""))
+        cleaned_message = str(getattr(task.msg, "cleaned_message", raw_message))
+
+        run_id = generate_run_id()
+        started = perf_counter()
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="start",
+            run_id=run_id,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            ts=ts,
         )
+
+        try:
+            result = await asyncio.to_thread(
+                run_auto_reply_pipeline,
+                chat_type=chat_type,
+                group_id=group_id,
+                user_id=user_id,
+                user_name=user_name,
+                ts=ts,
+                raw_message=raw_message,
+                cleaned_message=cleaned_message,
+                run_id=run_id,
+            )
+            elapsed_ms = (perf_counter() - started) * 1000
+            observe_agent_event(
+                agent_name="auto_reply",
+                task_type="AUTO_REPLY",
+                stage="end",
+                run_id=run_id,
+                chat_type=chat_type,
+                group_id=group_id,
+                user_id=user_id,
+                user_name=user_name,
+                ts=ts,
+                latency_ms=elapsed_ms,
+                decision={
+                    "should_reply": bool(result.get("should_reply", False)),
+                    "reason": str(result.get("reason", "")),
+                    "matched_rule": result.get("matched_rule"),
+                    "trigger_mode": result.get("trigger_mode", ""),
+                },
+            )
+            should_reply_flag = bool(result.get("should_reply", False))
+            reason_text = str(result.get("reason", ""))
+            print(
+                "[AUTO_REPLY] "
+                f"chat={chat_type} group={group_id} user={user_name}({user_id}) "
+                f"should_reply={should_reply_flag} "
+                f"reason={reason_text}"
+            )
+        except Exception as error:
+            elapsed_ms = (perf_counter() - started) * 1000
+            observe_agent_event(
+                agent_name="auto_reply",
+                task_type="AUTO_REPLY",
+                stage="error",
+                run_id=run_id,
+                chat_type=chat_type,
+                group_id=group_id,
+                user_id=user_id,
+                user_name=user_name,
+                ts=ts,
+                latency_ms=elapsed_ms,
+                error=str(error),
+            )
+            print(
+                "[AUTO_REPLY-ERROR] "
+                f"chat={chat_type} group={group_id} user={user_id} error={error}"
+            )
     elif task.type == TaskType.GROUPNOTE:
         print("回复")
     else:
