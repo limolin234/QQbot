@@ -2,13 +2,14 @@ import asyncio,heapq,json,re
 from datetime import datetime, timezone
 from enum import IntEnum
 from types import SimpleNamespace
+from typing import Any
 from ncatbot.core import GroupMessage, PrivateMessage
 from time import time
 import logging
 from bot import allowed_id,urgent_keywords
 from workflows.summary import build_summary_chunks_from_log_lines
 from workflows.forward import get_forward_monitor_group_ids
-from workflows.auto_reply import get_auto_reply_monitor_numbers
+from workflows.auto_reply import get_auto_reply_monitor_numbers, get_auto_reply_runtime_config
 
 
 class TaskPriority(IntEnum):
@@ -121,6 +122,96 @@ def clean_message(raw_message):
 
 
 scheduler = MessageScheduler(maxsize=100)
+
+
+_auto_reply_state_lock = asyncio.Lock()
+_auto_reply_session_states: dict[str, dict[str, Any]] = {}
+
+
+def _build_auto_reply_session_key(chat_type: str, monitor_value: str) -> str:
+    return f"{chat_type}:{monitor_value}"
+
+
+def _build_auto_reply_payload(
+    *,
+    raw_message: str,
+    cleaned_message: str,
+    chat_type: str,
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    ts: str,
+) -> dict[str, str]:
+    return {
+        "raw_message": raw_message,
+        "cleaned_message": cleaned_message,
+        "chat_type": chat_type,
+        "group_id": group_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "ts": ts,
+    }
+
+
+def _payload_to_auto_reply_message(payload: dict[str, str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        raw_message=str(payload.get("raw_message", "")),
+        cleaned_message=str(payload.get("cleaned_message", "")),
+        chat_type=str(payload.get("chat_type", "")),
+        group_id=str(payload.get("group_id", "")),
+        user_id=str(payload.get("user_id", "unknown")),
+        user_name=str(payload.get("user_name", "")),
+        ts=str(payload.get("ts", "")),
+    )
+
+
+def _hit_at_bot(raw_message: str, bot_qq: str) -> bool:
+    at_ids = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message or "")
+    if not at_ids:
+        return False
+    configured_bot_qq = str(bot_qq).strip()
+    if not configured_bot_qq:
+        return False
+    return configured_bot_qq in at_ids
+
+
+async def auto_reply_pending_worker() -> None:
+    """定期扫描到期 pending，会话到点后自动投递 AUTO_REPLY。"""
+    while True:
+        runtime_config = get_auto_reply_runtime_config()
+        check_interval = max(int(runtime_config.get("flush_check_interval_seconds", 10)), 1)
+        min_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
+        pending_expire = max(int(runtime_config.get("pending_expire_seconds", 3600)), 0)
+        now = time()
+        due_payloads: list[dict[str, str]] = []
+
+        async with _auto_reply_state_lock:
+            for state in _auto_reply_session_states.values():
+                pending_payload = state.get("pending_payload")
+                if not isinstance(pending_payload, dict):
+                    continue
+
+                pending_since = float(state.get("pending_since", now) or now)
+                if pending_expire > 0 and (now - pending_since) > pending_expire:
+                    state["pending_payload"] = None
+                    state["pending_since"] = 0.0
+                    state["pending_count"] = 0
+                    continue
+
+                next_allowed_at = float(state.get("next_allowed_at", 0.0) or 0.0)
+                if now < next_allowed_at:
+                    continue
+
+                due_payloads.append(pending_payload)
+                state["pending_payload"] = None
+                state["pending_since"] = 0.0
+                state["pending_count"] = 0
+                state["next_allowed_at"] = now + min_interval if min_interval > 0 else 0.0
+
+        for payload in due_payloads:
+            await scheduler.push(_payload_to_auto_reply_message(payload), TaskType.AUTO_REPLY)
+
+        await asyncio.sleep(check_interval)
 
 
 LOG_FILE_PATH = "message.jsonl"
@@ -302,9 +393,13 @@ async def enqueue_auto_reply_if_monitored(
     if monitor_value not in monitor_numbers:
         return False
 
+    runtime_config = get_auto_reply_runtime_config()
+    min_reply_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
+    pending_max_messages = max(int(runtime_config.get("pending_max_messages", 50)), 1)
+
     original_raw_message = getattr(msg, "raw_message", "") or ""
     cleaned_message = clean_message(original_raw_message)
-    auto_reply_msg = SimpleNamespace(
+    auto_reply_payload = _build_auto_reply_payload(
         raw_message=original_raw_message,
         cleaned_message=cleaned_message,
         chat_type=target_chat_type,
@@ -313,7 +408,43 @@ async def enqueue_auto_reply_if_monitored(
         user_name=_extract_user_name(msg),
         ts=_extract_message_ts(msg),
     )
-    await scheduler.push(auto_reply_msg, TaskType.AUTO_REPLY)
+
+    bypass_cooldown = (
+        target_chat_type == "group"
+        and bool(runtime_config.get("bypass_cooldown_when_at_bot", True))
+        and _hit_at_bot(original_raw_message, str(runtime_config.get("bot_qq", "")))
+    )
+
+    enqueue_now = True
+    if min_reply_interval > 0 and not bypass_cooldown:
+        session_key = _build_auto_reply_session_key(target_chat_type, monitor_value)
+        now = time()
+        async with _auto_reply_state_lock:
+            state = _auto_reply_session_states.setdefault(
+                session_key,
+                {
+                    "next_allowed_at": 0.0,
+                    "pending_payload": None,
+                    "pending_since": 0.0,
+                    "pending_count": 0,
+                },
+            )
+            next_allowed_at = float(state.get("next_allowed_at", 0.0) or 0.0)
+            if now < next_allowed_at:
+                state["pending_payload"] = auto_reply_payload
+                previous_count = int(state.get("pending_count", 0) or 0)
+                state["pending_count"] = min(previous_count + 1, pending_max_messages)
+                if not float(state.get("pending_since", 0.0) or 0.0):
+                    state["pending_since"] = now
+                enqueue_now = False
+            else:
+                state["next_allowed_at"] = now + min_reply_interval
+                state["pending_payload"] = None
+                state["pending_since"] = 0.0
+                state["pending_count"] = 0
+
+    if enqueue_now:
+        await scheduler.push(_payload_to_auto_reply_message(auto_reply_payload), TaskType.AUTO_REPLY)
     return True
 
 

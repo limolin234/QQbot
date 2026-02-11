@@ -59,7 +59,7 @@ forward_config:
     # 例如：
     # - "群号1"
     # - "群号2"
-      - "1075786046"
+      # - "1075786046"
 
     # forward_decision_prompt：判断“该消息是否值得转发给主人”的规则。
     # 你可以按自己的需求直接改这段提示词。
@@ -84,13 +84,27 @@ auto_reply_config:
   config:
     model: qwen3-max-2026-01-23
     temperature: 0.2
+    # context_history_limit：最多携带多少条历史上下文
     context_history_limit: 12
+    # context_max_chars：历史上下文总字符上限（超过后截断）
     context_max_chars: 1800
+    # context_window_seconds：只读取最近 N 秒的历史消息作为上下文
+    context_window_seconds: 1800
+    # min_reply_interval_seconds：同一会话两次自动回复的最小间隔（冷却）
+    min_reply_interval_seconds: 20
+    # flush_check_interval_seconds：pending 扫描周期，单位秒
+    flush_check_interval_seconds: 10
+    # pending_expire_seconds：pending 最长保留时长，超时后丢弃
+    pending_expire_seconds: 3600
+    # bypass_cooldown_when_at_bot：群聊里 @bot 时是否跳过冷却立即触发
+    bypass_cooldown_when_at_bot: false
+    # pending_max_messages：冷却期间每会话最多累计的待处理消息数
+    pending_max_messages: 50
 
     # rules：自动回复规则列表（每个元素对应一个群聊或私聊目标）
     # 你可以按需添加多个规则，逐条匹配。
     rules:
-      - enabled: false
+      - enabled: true
         chat_type: group
         number: "1075786046"
 
@@ -98,7 +112,7 @@ auto_reply_config:
         # 可用原子条件：at_bot / keyword / always / ai_decide
         # 逻辑运算：||（或）/ &&（且）/ !（非）/ ()（分组）
         # 例如：at_bot || keyword
-        trigger_mode: "keyword && ai_decide"
+        trigger_mode: "always"
 
         # keywords：当 trigger_mode 使用 keyword 时生效
         keywords:

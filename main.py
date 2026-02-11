@@ -28,6 +28,7 @@ async def on_group_message(msg: GroupMessage):
 @bot.startup_event()# type: ignore
 async def on_startup(*args):
     asyncio.create_task(worker())
+    asyncio.create_task(scheduler.auto_reply_pending_worker())
     aiocron.crontab('0 22 * * *', func=lambda: scheduler.daily_summary(run_mode="auto"))
 
 bot.run()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, TypedDict
 import json
 import os
@@ -23,6 +24,58 @@ except Exception:  # pragma: no cover
 
 
 AUTO_REPLY_CONFIG = load_current_agent_config(__file__)
+
+
+def get_auto_reply_runtime_config() -> dict[str, Any]:
+    """读取并规范化 auto_reply 运行时配置。"""
+
+    def int_config(name: str, default: int) -> int:
+        try:
+            value = int(AUTO_REPLY_CONFIG.get(name, default))
+        except (TypeError, ValueError):
+            value = default
+        return max(value, 0)
+
+    def bool_config(name: str, default: bool) -> bool:
+        value = AUTO_REPLY_CONFIG.get(name, default)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return bool(default)
+
+    return {
+        "context_history_limit": int_config("context_history_limit", 12),
+        "context_max_chars": int_config("context_max_chars", 1800),
+        "context_window_seconds": int_config("context_window_seconds", 1800),
+        "min_reply_interval_seconds": int_config("min_reply_interval_seconds", 300),
+        "flush_check_interval_seconds": int_config("flush_check_interval_seconds", 10),
+        "pending_expire_seconds": int_config("pending_expire_seconds", 3600),
+        "pending_max_messages": int_config("pending_max_messages", 50),
+        "bypass_cooldown_when_at_bot": bool_config("bypass_cooldown_when_at_bot", True),
+        "bot_qq": str(AUTO_REPLY_CONFIG.get("bot_qq", "")).strip(),
+    }
+
+
+def _parse_timestamp_to_epoch_seconds(ts_text: str) -> float | None:
+    text = str(ts_text).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        pass
+    iso_text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso_text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def get_auto_reply_monitor_numbers(chat_type: str = "group") -> set[str]:
@@ -52,6 +105,7 @@ def load_recent_context_messages(
     current_cleaned_message: str,
     limit: int,
     max_chars: int,
+    window_seconds: int,
     log_path: str = "message.jsonl",
 ) -> list[str]:
     """从 message.jsonl 读取最近上下文消息（按 chat_type + 会话范围）。"""
@@ -65,6 +119,8 @@ def load_recent_context_messages(
     target_chat_type = str(chat_type).strip().lower()
     target_group = str(group_id)
     target_user = str(user_id)
+    current_epoch = _parse_timestamp_to_epoch_seconds(current_ts)
+    window_enabled = bool(window_seconds > 0 and current_epoch is not None)
     for raw_line in raw_lines:
         try:
             payload = json.loads(raw_line)
@@ -84,8 +140,12 @@ def load_recent_context_messages(
         cleaned_message = str(payload.get("cleaned_message", "")).strip()
         if not cleaned_message:
             continue
-        sender_name = str(payload.get("user_name", "")).strip() or str(payload.get("user_id", ""))
         ts = str(payload.get("ts", ""))
+        if window_enabled:
+            payload_epoch = _parse_timestamp_to_epoch_seconds(ts)
+            if payload_epoch is not None and payload_epoch < (current_epoch - window_seconds):
+                continue
+        sender_name = str(payload.get("user_name", "")).strip() or str(payload.get("user_id", ""))
         matched_records.append((ts, sender_name, cleaned_message))
 
     context_lines: list[str] = []
@@ -558,14 +618,10 @@ def run_auto_reply_pipeline(
     run_id: str = "",
 ) -> dict[str, Any]:
     """AutoReply 主处理管道：先判定，再按规则提示词生成回复文本。"""
-    try:
-        context_limit = int(AUTO_REPLY_CONFIG.get("context_history_limit", 12))
-    except (TypeError, ValueError):
-        context_limit = 12
-    try:
-        context_max_chars = int(AUTO_REPLY_CONFIG.get("context_max_chars", 1800))
-    except (TypeError, ValueError):
-        context_max_chars = 1800
+    runtime_config = get_auto_reply_runtime_config()
+    context_limit = runtime_config["context_history_limit"]
+    context_max_chars = runtime_config["context_max_chars"]
+    context_window_seconds = runtime_config["context_window_seconds"]
 
     context_messages = load_recent_context_messages(
         chat_type=str(chat_type).strip().lower(),
@@ -575,6 +631,7 @@ def run_auto_reply_pipeline(
         current_cleaned_message=str(cleaned_message),
         limit=max(context_limit, 0),
         max_chars=max(context_max_chars, 0),
+        window_seconds=max(context_window_seconds, 0),
     )
 
     context = AutoReplyMessageContext(
@@ -599,7 +656,11 @@ def run_auto_reply_pipeline(
         user_id=context.user_id,
         user_name=context.user_name,
         ts=context.ts,
-        extra={"history_count": len(context_messages), "context_max_chars": context_max_chars},
+        extra={
+            "history_count": len(context_messages),
+            "context_max_chars": context_max_chars,
+            "context_window_seconds": context_window_seconds,
+        },
     )
 
     # 先判断是否要回复
