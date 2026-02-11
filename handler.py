@@ -4,7 +4,7 @@ from time import perf_counter
 from agent_pool import submit_agent_job
 from scheduler import PriorityTask, TaskType
 from bot import bot, QQnumber
-from workflows.agent_observe import generate_run_id, observe_agent_event
+from workflows.agent_observe import bind_agent_event, generate_run_id
 from workflows.auto_reply import run_auto_reply_pipeline
 from workflows.forward import run_forward_graph
 from workflows.summary import (
@@ -123,10 +123,9 @@ async def handle_task(task: PriorityTask):
 
         run_id = generate_run_id()
         started = perf_counter()
-        observe_agent_event(
+        log_event = bind_agent_event(
             agent_name="auto_reply",
             task_type="AUTO_REPLY",
-            stage="start",
             run_id=run_id,
             chat_type=chat_type,
             group_id=group_id,
@@ -134,6 +133,7 @@ async def handle_task(task: PriorityTask):
             user_name=user_name,
             ts=ts,
         )
+        log_event(stage="start")
 
         try:
             result = await submit_agent_job(
@@ -151,16 +151,8 @@ async def handle_task(task: PriorityTask):
                 run_in_thread=True,
             )
             elapsed_ms = (perf_counter() - started) * 1000
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
+            log_event(
                 stage="end",
-                run_id=run_id,
-                chat_type=chat_type,
-                group_id=group_id,
-                user_id=user_id,
-                user_name=user_name,
-                ts=ts,
                 latency_ms=elapsed_ms,
                 decision={
                     "should_reply": bool(result.get("should_reply", False)),
@@ -175,65 +167,21 @@ async def handle_task(task: PriorityTask):
             reply_text = str(result.get("reply_text", "") or "").strip()
 
             if should_reply_flag and reply_text:
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="send_start",
-                    run_id=run_id,
-                    chat_type=chat_type,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    ts=ts,
-                    extra={"reply_length": len(reply_text)},
-                )
+                log_event(stage="send_start", extra={"reply_length": len(reply_text)})
                 try:
                     if chat_type == "group":
                         await bot.api.post_group_msg(group_id, text=reply_text)
                     else:
                         await bot.api.post_private_msg(user_id, text=reply_text)
-                    observe_agent_event(
-                        agent_name="auto_reply",
-                        task_type="AUTO_REPLY",
-                        stage="send_end",
-                        run_id=run_id,
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        user_id=user_id,
-                        user_name=user_name,
-                        ts=ts,
-                        decision={"sent": True, "reply_length": len(reply_text)},
-                    )
+                    log_event(stage="send_end", decision={"sent": True, "reply_length": len(reply_text)})
                 except Exception as send_error:
-                    observe_agent_event(
-                        agent_name="auto_reply",
-                        task_type="AUTO_REPLY",
-                        stage="send_error",
-                        run_id=run_id,
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        user_id=user_id,
-                        user_name=user_name,
-                        ts=ts,
-                        error=str(send_error),
-                    )
+                    log_event(stage="send_error", error=str(send_error))
                     print(
                         "[AUTO_REPLY-SEND-ERROR] "
                         f"chat={chat_type} group={group_id} user={user_id} error={send_error}"
                     )
             elif should_reply_flag:
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="send_skip",
-                    run_id=run_id,
-                    chat_type=chat_type,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    ts=ts,
-                    decision={"sent": False, "reason": "reply_text_empty"},
-                )
+                log_event(stage="send_skip", decision={"sent": False, "reason": "reply_text_empty"})
 
             print(
                 "[AUTO_REPLY] "
@@ -243,19 +191,7 @@ async def handle_task(task: PriorityTask):
             )
         except Exception as error:
             elapsed_ms = (perf_counter() - started) * 1000
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
-                stage="error",
-                run_id=run_id,
-                chat_type=chat_type,
-                group_id=group_id,
-                user_id=user_id,
-                user_name=user_name,
-                ts=ts,
-                latency_ms=elapsed_ms,
-                error=str(error),
-            )
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             print(
                 "[AUTO_REPLY-ERROR] "
                 f"chat={chat_type} group={group_id} user={user_id} error={error}"
