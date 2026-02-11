@@ -125,15 +125,79 @@ async def handle_task(task: PriorityTask):
                     "reason": str(result.get("reason", "")),
                     "matched_rule": result.get("matched_rule"),
                     "trigger_mode": result.get("trigger_mode", ""),
+                    "reply_length": len(str(result.get("reply_text", "") or "")),
                 },
             )
             should_reply_flag = bool(result.get("should_reply", False))
             reason_text = str(result.get("reason", ""))
+            reply_text = str(result.get("reply_text", "") or "").strip()
+
+            if should_reply_flag and reply_text:
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="send_start",
+                    run_id=run_id,
+                    chat_type=chat_type,
+                    group_id=group_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    ts=ts,
+                    extra={"reply_length": len(reply_text)},
+                )
+                try:
+                    if chat_type == "group":
+                        await bot.api.post_group_msg(group_id, text=reply_text)
+                    else:
+                        await bot.api.post_private_msg(user_id, text=reply_text)
+                    observe_agent_event(
+                        agent_name="auto_reply",
+                        task_type="AUTO_REPLY",
+                        stage="send_end",
+                        run_id=run_id,
+                        chat_type=chat_type,
+                        group_id=group_id,
+                        user_id=user_id,
+                        user_name=user_name,
+                        ts=ts,
+                        decision={"sent": True, "reply_length": len(reply_text)},
+                    )
+                except Exception as send_error:
+                    observe_agent_event(
+                        agent_name="auto_reply",
+                        task_type="AUTO_REPLY",
+                        stage="send_error",
+                        run_id=run_id,
+                        chat_type=chat_type,
+                        group_id=group_id,
+                        user_id=user_id,
+                        user_name=user_name,
+                        ts=ts,
+                        error=str(send_error),
+                    )
+                    print(
+                        "[AUTO_REPLY-SEND-ERROR] "
+                        f"chat={chat_type} group={group_id} user={user_id} error={send_error}"
+                    )
+            elif should_reply_flag:
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="send_skip",
+                    run_id=run_id,
+                    chat_type=chat_type,
+                    group_id=group_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    ts=ts,
+                    decision={"sent": False, "reason": "reply_text_empty"},
+                )
+
             print(
                 "[AUTO_REPLY] "
                 f"chat={chat_type} group={group_id} user={user_name}({user_id}) "
                 f"should_reply={should_reply_flag} "
-                f"reason={reason_text}"
+                f"reason={reason_text} reply_len={len(reply_text)}"
             )
         except Exception as error:
             elapsed_ms = (perf_counter() - started) * 1000

@@ -60,6 +60,10 @@ class AutoReplyAIDecision(BaseModel):
     reason: str = Field(default="", description="判定理由")
 
 
+class AutoReplyGeneratedReply(BaseModel):
+    reply_text: str = Field(default="", description="自动回复文本")
+
+
 class AutoReplyAIState(TypedDict):
     prompt: str
     chat_type: str
@@ -71,6 +75,18 @@ class AutoReplyAIState(TypedDict):
     cleaned_message: str
     should_reply: bool
     reason: str
+
+
+class AutoReplyGenerateState(TypedDict):
+    prompt: str
+    chat_type: str
+    group_id: str
+    user_id: str
+    user_name: str
+    ts: str
+    raw_message: str
+    cleaned_message: str
+    reply_text: str
 
 
 class AutoReplyDecisionEngine:
@@ -154,6 +170,7 @@ class AutoReplyDecisionEngine:
                     "reason": reason,
                     "matched_rule": idx,
                     "trigger_mode": expression,
+                    "reply_prompt": str(rule.get("reply_prompt") or "").strip(),
                 }
                 observe_agent_event(
                     agent_name="auto_reply",
@@ -357,6 +374,102 @@ class AutoReplyDecisionEngine:
             return True, reason or "ai_decide=true"
         return False, reason or "ai_decide=false"
 
+    def generate_reply_text(
+        self,
+        *,
+        reply_prompt: str,
+        context: AutoReplyMessageContext,
+    ) -> str:
+        prompt = str(reply_prompt).strip()
+        if not prompt:
+            return ""
+
+        if load_dotenv is not None:
+            load_dotenv(override=False)
+        api_key = os.getenv("LLM_API_KEY")
+        if not api_key:
+            raise ValueError("缺少 LLM_API_KEY")
+
+        llm_kwargs: dict[str, Any] = {
+            "model_name": self.model,
+            "temperature": self.temperature,
+            "openai_api_key": api_key,
+        }
+        base_url = os.getenv("LLM_API_BASE_URL")
+        if base_url:
+            llm_kwargs["openai_api_base"] = base_url
+
+        llm = ChatOpenAI(**llm_kwargs).with_structured_output(AutoReplyGeneratedReply)
+
+        def generate_node(state: AutoReplyGenerateState) -> AutoReplyGenerateState:
+            llm_input = {
+                "chat_type": state["chat_type"],
+                "group_id": state["group_id"],
+                "user_id": state["user_id"],
+                "user_name": state["user_name"],
+                "ts": state["ts"],
+                "raw_message": state["raw_message"],
+                "cleaned_message": state["cleaned_message"],
+            }
+            result = llm.invoke(
+                [
+                    SystemMessage(content=state["prompt"]),
+                    HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
+                ]
+            )
+            return {
+                **state,
+                "reply_text": str(result.reply_text or "").strip(),
+            }
+
+        graph = StateGraph(AutoReplyGenerateState)
+        graph.add_node("generate", generate_node)
+        graph.add_edge(START, "generate")
+        graph.add_edge("generate", END)
+        app = graph.compile()
+
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="reply_generate_start",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            extra={"model": self.model},
+        )
+
+        final_state = app.invoke(
+            {
+                "prompt": prompt,
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+                "user_name": context.user_name,
+                "ts": context.ts,
+                "raw_message": context.raw_message,
+                "cleaned_message": context.cleaned_message,
+                "reply_text": "",
+            }
+        )
+
+        reply_text = str(final_state.get("reply_text", "")).strip()
+        observe_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            stage="reply_generate_end",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+            decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)},
+        )
+        return reply_text
+
 
 def run_auto_reply_pipeline(
     *,
@@ -369,7 +482,7 @@ def run_auto_reply_pipeline(
     cleaned_message: str,
     run_id: str = "",
 ) -> dict[str, Any]:
-    """AutoReply 主处理管道：当前仅返回 should_reply 判定结果。"""
+    """AutoReply 主处理管道：先判定，再按规则提示词生成回复文本。"""
     context = AutoReplyMessageContext(
         chat_type=str(chat_type).strip().lower(),
         group_id=str(group_id),
@@ -380,13 +493,37 @@ def run_auto_reply_pipeline(
         cleaned_message=str(cleaned_message),
         run_id=str(run_id),
     )
+
+    # 先判断是否要回复
     engine = AutoReplyDecisionEngine(AUTO_REPLY_CONFIG)
     result = engine.should_reply(context)
+
+    # 然后生成具体的回复内容文本
+    reply_text = ""
+    if bool(result.get("should_reply", False)):
+        reply_prompt = str(result.get("reply_prompt", "")).strip()
+        if reply_prompt:
+            try:
+                reply_text = engine.generate_reply_text(reply_prompt=reply_prompt, context=context)
+            except Exception as error:
+                observe_agent_event(
+                    agent_name="auto_reply",
+                    task_type="AUTO_REPLY",
+                    stage="reply_generate_error",
+                    run_id=context.run_id,
+                    chat_type=context.chat_type,
+                    group_id=context.group_id,
+                    user_id=context.user_id,
+                    user_name=context.user_name,
+                    ts=context.ts,
+                    error=str(error),
+                )
     return {
         "should_reply": bool(result.get("should_reply", False)),
         "reason": str(result.get("reason", "")),
         "matched_rule": result.get("matched_rule"),
         "trigger_mode": result.get("trigger_mode", ""),
+        "reply_text": reply_text,
         "chat_type": context.chat_type,
         "group_id": context.group_id,
         "user_id": context.user_id,
