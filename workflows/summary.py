@@ -74,6 +74,7 @@ except (TypeError, ValueError):
 
 DEFAULT_SUMMARY_GLOBAL_OVERVIEW = bool(SUMMARY_AGENT_CONFIG.get("summary_global_overview", False))
 DEFAULT_SUMMARY_SEND_MODE = str(SUMMARY_AGENT_CONFIG.get("summary_send_mode") or "single_message").strip().lower()
+DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED = bool(SUMMARY_AGENT_CONFIG.get("summary_group_reduce_enabled", True))
 
 
 HEADER_RE = re.compile(
@@ -608,7 +609,11 @@ def run_grouped_summary_graph(
     total_chunks = 0
     total_messages = 0
     llm = _build_llm(model_name=model_name, temperature=temperature)
-    structured_chunk_reducer = llm.with_structured_output(ChunkSummarySchema)
+    structured_chunk_reducer = (
+        llm.with_structured_output(ChunkSummarySchema)
+        if DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED
+        else None
+    )
 
     for job in group_jobs:
         if not isinstance(job, dict):
@@ -636,11 +641,20 @@ def run_grouped_summary_graph(
         merged_sources: list[str] = []
         merged_trace_lines: list[str] = []
         merged_map_results: list[SummaryMapResult] = []
+        merged_highlights: list[str] = []
+        merged_risks: list[str] = []
+        merged_todos: list[str] = []
+        overview_candidates: list[str] = []
         chunk_summary_lines: list[str] = []
         for idx, chunk_result in enumerate(chunk_results, start=1):
             merged_sources.extend(chunk_result.sources)
             merged_trace_lines.extend(chunk_result.trace_lines)
             merged_map_results.extend(chunk_result.map_results)
+            merged_highlights.extend(chunk_result.highlights)
+            merged_risks.extend(chunk_result.risks)
+            merged_todos.extend(chunk_result.todos)
+            if chunk_result.overview.strip():
+                overview_candidates.append(chunk_result.overview.strip())
             chunk_summary_lines.append(
                 "\n".join(
                     [
@@ -656,28 +670,48 @@ def run_grouped_summary_graph(
                 )
             )
 
+        if not overview_candidates:
+            fallback_overview = "今日暂无可总结内容。"
+        elif len(overview_candidates) == 1:
+            fallback_overview = overview_candidates[0]
+        elif len(overview_candidates) == 2:
+            fallback_overview = f"{overview_candidates[0]}；{overview_candidates[1]}"
+        else:
+            fallback_overview = f"{overview_candidates[0]}；{overview_candidates[1]}；另有{len(overview_candidates) - 2}个分块补充信息。"
+
         if len(chunk_results) == 1:
             reduced_overview = chunk_results[0].overview
             reduced_highlights = chunk_results[0].highlights
             reduced_risks = chunk_results[0].risks
             reduced_todos = chunk_results[0].todos
+        elif DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED and structured_chunk_reducer is not None:
+            try:
+                reduce_messages = [
+                    SystemMessage(content=GROUP_REDUCE_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=GROUP_REDUCE_USER_PROMPT_TEMPLATE.format(
+                            chat_type=chat_type,
+                            group_id=group_id,
+                            chunk_count=len(chunk_results),
+                            chunk_summaries="\n\n".join(chunk_summary_lines),
+                        )
+                    ),
+                ]
+                reduce_result = structured_chunk_reducer.invoke(reduce_messages)
+                reduced_overview = (reduce_result.overview or "").strip() or "今日暂无可总结内容。"
+                reduced_highlights = _safe_list(reduce_result.highlights, max_items=6)
+                reduced_risks = _safe_list(reduce_result.risks, max_items=5)
+                reduced_todos = _safe_list(reduce_result.todos, max_items=5)
+            except Exception:
+                reduced_overview = fallback_overview
+                reduced_highlights = _safe_list(merged_highlights, max_items=6)
+                reduced_risks = _safe_list(merged_risks, max_items=5)
+                reduced_todos = _safe_list(merged_todos, max_items=5)
         else:
-            reduce_messages = [
-                SystemMessage(content=GROUP_REDUCE_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=GROUP_REDUCE_USER_PROMPT_TEMPLATE.format(
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        chunk_count=len(chunk_results),
-                        chunk_summaries="\n\n".join(chunk_summary_lines),
-                    )
-                ),
-            ]
-            reduce_result = structured_chunk_reducer.invoke(reduce_messages)
-            reduced_overview = (reduce_result.overview or "").strip() or "今日暂无可总结内容。"
-            reduced_highlights = _safe_list(reduce_result.highlights, max_items=6)
-            reduced_risks = _safe_list(reduce_result.risks, max_items=5)
-            reduced_todos = _safe_list(reduce_result.todos, max_items=5)
+            reduced_overview = fallback_overview
+            reduced_highlights = _safe_list(merged_highlights, max_items=6)
+            reduced_risks = _safe_list(merged_risks, max_items=5)
+            reduced_todos = _safe_list(merged_todos, max_items=5)
 
         group_summary = SummaryFinalResult(
             date=today_text,

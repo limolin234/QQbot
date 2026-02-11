@@ -43,6 +43,11 @@ summary_config:
     # single_message: 合并为一条消息发送
     # multi_message: 先发总览，再按群逐条发送
 
+    summary_group_reduce_enabled: true
+    # summary_group_reduce_enabled：是否启用“每群多 chunk 的二次 LLM reduce”
+    # true: 启用（质量更高，会增加 LLM 调用）
+    # false: 关闭（走本地去重合并，成本更低）
+
 forward_config:
   file_name: forward.py
   config:
