@@ -12,6 +12,7 @@ plugins
 
 bot.py
 config.yaml
+workflows/agent_config.yaml
 
 logs/message_handler.log
 message.log
@@ -22,3 +23,4 @@ message.jsonl
 message copy.jsonl
 today.log
 logs/message_handler.log
+workflows/agent_config.yaml
