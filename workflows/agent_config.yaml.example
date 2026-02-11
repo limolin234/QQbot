@@ -106,7 +106,7 @@ auto_reply_config:
     rules:
       - enabled: true
         chat_type: group
-        number: "229215539"
+        number: "1075786046"
 
         # trigger_mode：触发条件逻辑表达式
         # 可用原子条件：at_bot / keyword / always / ai_decide

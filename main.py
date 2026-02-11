@@ -1,6 +1,7 @@
 import asyncio,aiocron
 from ncatbot.core import PrivateMessage, GroupMessage
 import scheduler,handler
+from agent_pool import setup_agent_pool
 from bot import bot, QQnumber
 
 async def worker():
@@ -27,6 +28,7 @@ async def on_group_message(msg: GroupMessage):
     
 @bot.startup_event()# type: ignore
 async def on_startup(*args):
+    await setup_agent_pool()
     asyncio.create_task(worker())
     asyncio.create_task(scheduler.auto_reply_pending_worker())
     aiocron.crontab('0 22 * * *', func=lambda: scheduler.daily_summary(run_mode="auto"))

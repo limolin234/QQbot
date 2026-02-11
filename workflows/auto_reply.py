@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, TypedDict
+from types import SimpleNamespace
+from typing import Any, Awaitable, Callable, TypedDict
 import json
 import os
 import re
@@ -14,7 +16,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from workflows.agent_observe import observe_agent_event
+from workflows.agent_observe import bind_agent_event
 from workflows.agent_config_loader import load_current_agent_config
 
 try:
@@ -94,6 +96,234 @@ def get_auto_reply_monitor_numbers(chat_type: str = "group") -> set[str]:
         if number:
             monitor_numbers.add(number)
     return monitor_numbers
+
+
+class AutoReplyDispatcher:
+    """AutoReply 接入层：监控命中 + 冷却窗口 + pending 聚合/过期。"""
+
+    def __init__(self):
+        self._state_lock = asyncio.Lock()
+        self._session_states: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _build_session_key(chat_type: str, monitor_value: str) -> str:
+        return f"{chat_type}:{monitor_value}"
+
+    @staticmethod
+    def _build_payload(
+        *,
+        raw_message: str,
+        cleaned_message: str,
+        chat_type: str,
+        group_id: str,
+        user_id: str,
+        user_name: str,
+        ts: str,
+    ) -> dict[str, str]:
+        return {
+            "raw_message": raw_message,
+            "cleaned_message": cleaned_message,
+            "chat_type": chat_type,
+            "group_id": group_id,
+            "user_id": user_id,
+            "user_name": user_name,
+            "ts": ts,
+        }
+
+    @staticmethod
+    def payload_to_message(payload: dict[str, str]) -> SimpleNamespace:
+        return SimpleNamespace(
+            raw_message=str(payload.get("raw_message", "")),
+            cleaned_message=str(payload.get("cleaned_message", "")),
+            chat_type=str(payload.get("chat_type", "")),
+            group_id=str(payload.get("group_id", "")),
+            user_id=str(payload.get("user_id", "unknown")),
+            user_name=str(payload.get("user_name", "")),
+            ts=str(payload.get("ts", "")),
+        )
+
+    @staticmethod
+    def _hit_at_bot(raw_message: str, bot_qq: str) -> bool:
+        at_ids = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message or "")
+        if not at_ids:
+            return False
+        configured_bot_qq = str(bot_qq).strip()
+        if not configured_bot_qq:
+            return False
+        return configured_bot_qq in at_ids
+
+    async def enqueue_if_monitored(
+        self,
+        *,
+        chat_type: str,
+        monitor_value: str,
+        raw_message: str,
+        cleaned_message: str,
+        user_id: str,
+        user_name: str,
+        ts: str,
+        enqueue_payload: Callable[[dict[str, str]], Awaitable[None]],
+    ) -> bool:
+        target_chat_type = str(chat_type).strip().lower()
+        if target_chat_type not in {"group", "private"}:
+            return False
+
+        normalized_monitor_value = str(monitor_value)
+        monitor_numbers = get_auto_reply_monitor_numbers(chat_type=target_chat_type)
+        if normalized_monitor_value not in monitor_numbers:
+            return False
+
+        runtime_config = get_auto_reply_runtime_config()
+        min_reply_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
+        pending_max_messages = max(int(runtime_config.get("pending_max_messages", 50)), 1)
+
+        auto_reply_payload = self._build_payload(
+            raw_message=str(raw_message),
+            cleaned_message=str(cleaned_message),
+            chat_type=target_chat_type,
+            group_id=normalized_monitor_value if target_chat_type == "group" else "private",
+            user_id=str(user_id),
+            user_name=str(user_name),
+            ts=str(ts),
+        )
+        log_event = bind_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            chat_type=target_chat_type,
+            group_id=auto_reply_payload["group_id"],
+            user_id=auto_reply_payload["user_id"],
+            user_name=auto_reply_payload["user_name"],
+            ts=auto_reply_payload["ts"],
+        )
+
+        bypass_cooldown = (
+            target_chat_type == "group"
+            and bool(runtime_config.get("bypass_cooldown_when_at_bot", True))
+            and self._hit_at_bot(str(raw_message), str(runtime_config.get("bot_qq", "")))
+        )
+        if bypass_cooldown:
+            log_event(
+                stage="throttle_bypass_cooldown",
+                extra={
+                    "session": f"{target_chat_type}:{normalized_monitor_value}",
+                    "reason": "at_bot",
+                },
+            )
+
+        enqueue_now = True
+        if min_reply_interval > 0 and not bypass_cooldown:
+            session_key = self._build_session_key(target_chat_type, normalized_monitor_value)
+            now = datetime.now().timestamp()
+            async with self._state_lock:
+                state = self._session_states.setdefault(
+                    session_key,
+                    {
+                        "next_allowed_at": 0.0,
+                        "pending_payload": None,
+                        "pending_since": 0.0,
+                        "pending_count": 0,
+                    },
+                )
+                next_allowed_at = float(state.get("next_allowed_at", 0.0) or 0.0)
+                if now < next_allowed_at:
+                    state["pending_payload"] = auto_reply_payload
+                    previous_count = int(state.get("pending_count", 0) or 0)
+                    state["pending_count"] = min(previous_count + 1, pending_max_messages)
+                    if not float(state.get("pending_since", 0.0) or 0.0):
+                        state["pending_since"] = now
+                    log_event(
+                        stage="throttle_queued_pending",
+                        extra={
+                            "session": session_key,
+                            "pending_count": int(state.get("pending_count", 0) or 0),
+                            "cooldown_left_seconds": max(int(next_allowed_at - now), 0),
+                        },
+                    )
+                    enqueue_now = False
+                else:
+                    state["next_allowed_at"] = now + min_reply_interval
+                    state["pending_payload"] = None
+                    state["pending_since"] = 0.0
+                    state["pending_count"] = 0
+
+        if enqueue_now:
+            log_event(
+                stage="throttle_enqueue_now",
+                extra={
+                    "session": f"{target_chat_type}:{normalized_monitor_value}",
+                    "cooldown_seconds": min_reply_interval,
+                },
+            )
+            await enqueue_payload(auto_reply_payload)
+        return True
+
+    async def pending_worker(self, *, enqueue_payload: Callable[[dict[str, str]], Awaitable[None]]) -> None:
+        while True:
+            runtime_config = get_auto_reply_runtime_config()
+            check_interval = max(int(runtime_config.get("flush_check_interval_seconds", 10)), 1)
+            min_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
+            pending_expire = max(int(runtime_config.get("pending_expire_seconds", 3600)), 0)
+            now = datetime.now().timestamp()
+            due_payloads: list[dict[str, str]] = []
+
+            async with self._state_lock:
+                for session_key, state in self._session_states.items():
+                    pending_payload = state.get("pending_payload")
+                    if not isinstance(pending_payload, dict):
+                        continue
+
+                    pending_event = bind_agent_event(
+                        agent_name="auto_reply",
+                        task_type="AUTO_REPLY",
+                        chat_type=str(pending_payload.get("chat_type", "")),
+                        group_id=str(pending_payload.get("group_id", "")),
+                        user_id=str(pending_payload.get("user_id", "")),
+                        user_name=str(pending_payload.get("user_name", "")),
+                        ts=str(pending_payload.get("ts", "")),
+                    )
+
+                    pending_since = float(state.get("pending_since", now) or now)
+                    if pending_expire > 0 and (now - pending_since) > pending_expire:
+                        pending_event(
+                            stage="throttle_pending_expired",
+                            extra={
+                                "session": session_key,
+                                "pending_age_seconds": int(now - pending_since),
+                            },
+                        )
+                        state["pending_payload"] = None
+                        state["pending_since"] = 0.0
+                        state["pending_count"] = 0
+                        continue
+
+                    next_allowed_at = float(state.get("next_allowed_at", 0.0) or 0.0)
+                    if now < next_allowed_at:
+                        continue
+
+                    pending_event(
+                        stage="throttle_pending_flush",
+                        extra={
+                            "session": session_key,
+                            "pending_count": int(state.get("pending_count", 0) or 0),
+                        },
+                    )
+                    due_payloads.append(pending_payload)
+                    state["pending_payload"] = None
+                    state["pending_since"] = 0.0
+                    state["pending_count"] = 0
+                    state["next_allowed_at"] = now + min_interval if min_interval > 0 else 0.0
+
+            for payload in due_payloads:
+                await enqueue_payload(payload)
+
+            await asyncio.sleep(check_interval)
+
+
+_AUTO_REPLY_DISPATCHER = AutoReplyDispatcher()
+
+
+def get_auto_reply_dispatcher() -> AutoReplyDispatcher:
+    return _AUTO_REPLY_DISPATCHER
 
 
 def load_recent_context_messages(
@@ -234,6 +464,16 @@ class AutoReplyDecisionEngine:
             self.temperature = 0.0
 
     def should_reply(self, context: AutoReplyMessageContext) -> dict[str, Any]:
+        context_event = bind_agent_event(
+            agent_name="auto_reply",
+            task_type="AUTO_REPLY",
+            run_id=context.run_id,
+            chat_type=context.chat_type,
+            group_id=context.group_id,
+            user_id=context.user_id,
+            user_name=context.user_name,
+            ts=context.ts,
+        )
         matching_rules = []
         for rule in self.rules:
             rule_chat_type = str(rule.get("chat_type", "")).strip().lower()
@@ -245,16 +485,8 @@ class AutoReplyDecisionEngine:
                 continue
             matching_rules.append(rule)
 
-        observe_agent_event(
-            agent_name="auto_reply",
-            task_type="AUTO_REPLY",
+        context_event(
             stage="rules_filtered",
-            run_id=context.run_id,
-            chat_type=context.chat_type,
-            group_id=context.group_id,
-            user_id=context.user_id,
-            user_name=context.user_name,
-            ts=context.ts,
             extra={"configured_rules": len(self.rules), "matched_rules": len(matching_rules)},
         )
 
@@ -264,34 +496,15 @@ class AutoReplyDecisionEngine:
                 "reason": "未命中启用规则",
                 "matched_rule": None,
             }
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
-                stage="decision_end",
-                run_id=context.run_id,
-                chat_type=context.chat_type,
-                group_id=context.group_id,
-                user_id=context.user_id,
-                user_name=context.user_name,
-                ts=context.ts,
-                decision=result,
-            )
+            context_event(stage="decision_end", decision=result)
             return result
 
         failure_reasons: list[str] = []
         for idx, rule in enumerate(matching_rules):
             expression = str(rule.get("trigger_mode") or "always").strip()
             ok, reason = self.evaluate_trigger_expression(expression, rule, context)
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
+            context_event(
                 stage="rule_evaluated",
-                run_id=context.run_id,
-                chat_type=context.chat_type,
-                group_id=context.group_id,
-                user_id=context.user_id,
-                user_name=context.user_name,
-                ts=context.ts,
                 decision={"should_reply": ok, "reason": reason},
                 extra={"rule_index": idx, "trigger_mode": expression},
             )
@@ -303,18 +516,7 @@ class AutoReplyDecisionEngine:
                     "trigger_mode": expression,
                     "reply_prompt": str(rule.get("reply_prompt") or "").strip(),
                 }
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="decision_end",
-                    run_id=context.run_id,
-                    chat_type=context.chat_type,
-                    group_id=context.group_id,
-                    user_id=context.user_id,
-                    user_name=context.user_name,
-                    ts=context.ts,
-                    decision=result,
-                )
+                context_event(stage="decision_end", decision=result)
                 return result
             failure_reasons.append(f"rule#{idx}:{reason}")
 
@@ -323,18 +525,7 @@ class AutoReplyDecisionEngine:
             "reason": "; ".join(failure_reasons) if failure_reasons else "规则未触发",
             "matched_rule": None,
         }
-        observe_agent_event(
-            agent_name="auto_reply",
-            task_type="AUTO_REPLY",
-            stage="decision_end",
-            run_id=context.run_id,
-            chat_type=context.chat_type,
-            group_id=context.group_id,
-            user_id=context.user_id,
-            user_name=context.user_name,
-            ts=context.ts,
-            decision=result,
-        )
+        context_event(stage="decision_end", decision=result)
         return result
 
     def evaluate_trigger_expression(
@@ -459,17 +650,19 @@ class AutoReplyDecisionEngine:
         graph.add_edge(START, "decide")
         graph.add_edge("decide", END)
         app = graph.compile()
-
-        observe_agent_event(
+        context_event = bind_agent_event(
             agent_name="auto_reply",
             task_type="AUTO_REPLY",
-            stage="ai_decide_start",
             run_id=context.run_id,
             chat_type=context.chat_type,
             group_id=context.group_id,
             user_id=context.user_id,
             user_name=context.user_name,
             ts=context.ts,
+        )
+
+        context_event(
+            stage="ai_decide_start",
             extra={"model": self.model, "history_count": len(context.history_messages)},
         )
 
@@ -491,18 +684,7 @@ class AutoReplyDecisionEngine:
 
         should_reply = bool(final_state.get("should_reply", False))
         reason = str(final_state.get("reason", "")).strip()
-        observe_agent_event(
-            agent_name="auto_reply",
-            task_type="AUTO_REPLY",
-            stage="ai_decide_end",
-            run_id=context.run_id,
-            chat_type=context.chat_type,
-            group_id=context.group_id,
-            user_id=context.user_id,
-            user_name=context.user_name,
-            ts=context.ts,
-            decision={"should_reply": should_reply, "reason": reason},
-        )
+        context_event(stage="ai_decide_end", decision={"should_reply": should_reply, "reason": reason})
         if should_reply:
             return True, reason or "ai_decide=true"
         return False, reason or "ai_decide=false"
@@ -561,17 +743,19 @@ class AutoReplyDecisionEngine:
         graph.add_edge(START, "generate")
         graph.add_edge("generate", END)
         app = graph.compile()
-
-        observe_agent_event(
+        context_event = bind_agent_event(
             agent_name="auto_reply",
             task_type="AUTO_REPLY",
-            stage="reply_generate_start",
             run_id=context.run_id,
             chat_type=context.chat_type,
             group_id=context.group_id,
             user_id=context.user_id,
             user_name=context.user_name,
             ts=context.ts,
+        )
+
+        context_event(
+            stage="reply_generate_start",
             extra={"model": self.model, "history_count": len(context.history_messages)},
         )
 
@@ -591,18 +775,7 @@ class AutoReplyDecisionEngine:
         )
 
         reply_text = str(final_state.get("reply_text", "")).strip()
-        observe_agent_event(
-            agent_name="auto_reply",
-            task_type="AUTO_REPLY",
-            stage="reply_generate_end",
-            run_id=context.run_id,
-            chat_type=context.chat_type,
-            group_id=context.group_id,
-            user_id=context.user_id,
-            user_name=context.user_name,
-            ts=context.ts,
-            decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)},
-        )
+        context_event(stage="reply_generate_end", decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)})
         return reply_text
 
 
@@ -645,17 +818,19 @@ def run_auto_reply_pipeline(
         history_messages=context_messages,
         run_id=str(run_id),
     )
-
-    observe_agent_event(
+    context_event = bind_agent_event(
         agent_name="auto_reply",
         task_type="AUTO_REPLY",
-        stage="context_loaded",
         run_id=context.run_id,
         chat_type=context.chat_type,
         group_id=context.group_id,
         user_id=context.user_id,
         user_name=context.user_name,
         ts=context.ts,
+    )
+
+    context_event(
+        stage="context_loaded",
         extra={
             "history_count": len(context_messages),
             "context_max_chars": context_max_chars,
@@ -675,18 +850,7 @@ def run_auto_reply_pipeline(
             try:
                 reply_text = engine.generate_reply_text(reply_prompt=reply_prompt, context=context)
             except Exception as error:
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="reply_generate_error",
-                    run_id=context.run_id,
-                    chat_type=context.chat_type,
-                    group_id=context.group_id,
-                    user_id=context.user_id,
-                    user_name=context.user_name,
-                    ts=context.ts,
-                    error=str(error),
-                )
+                context_event(stage="reply_generate_error", error=str(error))
     return {
         "should_reply": bool(result.get("should_reply", False)),
         "reason": str(result.get("reason", "")),

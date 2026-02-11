@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 import json
 import uuid
 
@@ -76,6 +76,16 @@ def observe_agent_event(
                 if fcntl is not None:
                     fcntl.flock(file.fileno(), fcntl.LOCK_UN)
     return final_run_id
+
+
+def bind_agent_event(**base_fields: Any) -> Callable[..., str]:
+    """返回预绑定公共字段的日志写入函数。"""
+
+    def write_event(**event_fields: Any) -> str:
+        payload = {**base_fields, **event_fields}
+        return observe_agent_event(**payload)
+
+    return write_event
 
 
 def read_agent_events(

@@ -1,10 +1,10 @@
 import asyncio
 import heapq
+import inspect
 import logging
 from time import time
 from typing import Any, Callable, Coroutine, List, Optional
 import uuid
-import openai
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 _worker_tasks: List[asyncio.Task] = []
 
 # LLM 处理器（默认为 None，启动后必须注册）
-_llm_handler: Optional[Callable[[Any], Coroutine]] = None
+_llm_handler: Optional[Callable[[Any], Coroutine[Any, Any, Any]]] = None
 
 
 # ----------------------------------------------------------------------
@@ -101,15 +101,8 @@ async def _worker(worker_id: int):
         task = None
         try:
             task = await _scheduler.pop()
-            if _llm_handler is None:
-                err = RuntimeError("LLM 处理器未注册，请先调用 register_llm_handler")
-                logger.error(err)
-                if task.future:
-                    task.future.set_exception(err)
-                continue
-
             try:
-                result = await _llm_handler(task.data)
+                result = await _execute_task_payload(task.data)
                 if task.future and not task.future.done():
                     task.future.set_result(result)
             except Exception as e:
@@ -122,6 +115,37 @@ async def _worker(worker_id: int):
             break
         except Exception:
             logger.exception("Worker-%d 内部异常", worker_id)
+
+
+async def _execute_task_payload(data: dict[str, Any]) -> Any:
+    """
+    - 根据 payload["type"] 分支：
+    - callable：执行函数（submit_agent_job(...) 走这个分支），支持：
+        - run_in_thread=True 时用 asyncio.to_thread 跑同步阻塞函数
+        - 否则直接调用；若返回 awaitable 就 await 
+    - llm：走老的 _llm_handler（给 agentp_LLM(...) 兼容保留）
+    """
+    payload_type = str(data.get("type", ""))
+    if payload_type == "callable":
+        func = data.get("func")
+        if not callable(func):
+            raise ValueError("callable 任务缺少可调用对象")
+        args = data.get("args", ())
+        kwargs = data.get("kwargs", {})
+        run_in_thread = bool(data.get("run_in_thread", False))
+        if run_in_thread:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        result = func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    if payload_type == "llm":
+        if _llm_handler is None:
+            raise RuntimeError("LLM 处理器未注册，请先调用 register_llm_handler")
+        return await _llm_handler(data.get("payload"))
+
+    raise ValueError(f"未知任务类型: {payload_type}")
 
 
 # ----------------------------------------------------------------------
@@ -163,6 +187,52 @@ async def stop_agent_pool() -> None:
     logger.info("🛑 Agent 池已停止")
 
 
+async def _submit_pool_task(
+    *,
+    payload: dict[str, Any],
+    priority: int,
+    timeout: float,
+) -> Any:
+    if _scheduler is None:
+        raise RuntimeError("❌ Agent 池未启动，请先调用 setup_agent_pool()")
+
+    loop = _loop or asyncio.get_running_loop()
+    future = loop.create_future()
+    task = Task(priority=priority, data=payload, future=future)
+
+    try:
+        await _scheduler.put(task)
+    except asyncio.QueueFull as error:
+        raise RuntimeError("Agent 池队列已满，请求被拒绝") from error
+
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        if not future.done():
+            future.cancel()
+        raise
+
+
+async def submit_agent_job(
+    func: Callable[..., Any],
+    *args: Any,
+    priority: int = 7,
+    timeout: float = 60.0,
+    run_in_thread: Optional[bool] = None,
+    **kwargs: Any,
+) -> Any:
+    """提交通用任务到 Agent 池调度执行（不改变任务内部实现方式）。"""
+    run_blocking = not inspect.iscoroutinefunction(func) if run_in_thread is None else bool(run_in_thread)
+    payload = {
+        "type": "callable",
+        "func": func,
+        "args": args,
+        "kwargs": kwargs,
+        "run_in_thread": run_blocking,
+    }
+    return await _submit_pool_task(payload=payload, priority=priority, timeout=timeout)
+
+
 # ----------------------------------------------------------------------
 # 对外调用接口：await agentp_LLM(...) 直接得到回复
 # ----------------------------------------------------------------------
@@ -180,9 +250,6 @@ async def agentp_LLM(
     参数会被打包成字典传递给已注册的 LLM 处理器。
     处理器必须返回字符串（模型回复）。
     """
-    if _scheduler is None:
-        raise RuntimeError("❌ Agent 池未启动，请先调用 setup_agent_pool()")
-
     request_data = {
         "api_key": api_key,
         "api_base": api_base,
@@ -190,22 +257,12 @@ async def agentp_LLM(
         "model": model,
         **kwargs
     }
-
-    loop = _loop or asyncio.get_running_loop()
-    future = loop.create_future()
-    task = Task(priority=priority, data=request_data, future=future)
-
-    try:
-        await _scheduler.put(task)
-    except asyncio.QueueFull:
-        raise RuntimeError("Agent 池队列已满，请求被拒绝")
-
-    try:
-        return await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        if not future.done():
-            future.cancel()
-        raise
+    result = await _submit_pool_task(
+        payload={"type": "llm", "payload": request_data},
+        priority=priority,
+        timeout=timeout,
+    )
+    return str(result)
 
 
 # ----------------------------------------------------------------------
@@ -214,22 +271,7 @@ async def agentp_LLM(
 __all__ = [
     "setup_agent_pool",
     "stop_agent_pool",
+    "submit_agent_job",
     "agentp_LLM",
     "register_llm_handler",
 ]
-
-
-@register_llm_handler
-async def openai_handler(data):
-    """从 data 中提取参数，调用 OpenAI，返回字符串"""
-    openai.api_key = data["api_key"]
-    if data.get("api_base"):
-        openai.api_base = data["api_base"]
-
-    response = await openai.ChatCompletion.acreate(
-        model=data.get("model", "gpt-3.5-turbo"),
-        messages=[{"role": "user", "content": data["prompt"]}],
-        temperature=data.get("temperature", 0.7),
-        max_tokens=data.get("max_tokens", 150)
-    )
-    return response.choices[0].message.content

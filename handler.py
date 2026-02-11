@@ -1,9 +1,10 @@
 import asyncio
 from time import perf_counter
 
+from agent_pool import submit_agent_job
 from scheduler import PriorityTask, TaskType
 from bot import bot, QQnumber
-from workflows.agent_observe import generate_run_id, observe_agent_event
+from workflows.agent_observe import bind_agent_event, generate_run_id
 from workflows.auto_reply import run_auto_reply_pipeline
 from workflows.forward import run_forward_graph
 from workflows.summary import (
@@ -19,19 +20,61 @@ from workflows.summary import (
 
 async def handle_task(task: PriorityTask):
     if task.type == TaskType.SUMMARY:
+        ts = str(getattr(task.msg, "ts", ""))
+        chat_type = str(getattr(task.msg, "chat_type", ""))
+        group_id = str(getattr(task.msg, "group_id", ""))
+        user_id = str(getattr(task.msg, "user_id", ""))
+        user_name = str(getattr(task.msg, "user_name", ""))
         group_jobs = getattr(task.msg, "group_jobs", None)
         raw_message = getattr(task.msg, "raw_message", "") or ""
+        summary_decision: dict[str, object] = {}
+        run_id = generate_run_id()
+        started = perf_counter()
+        log_event = bind_agent_event(
+            agent_name="summary",
+            task_type="SUMMARY",
+            run_id=run_id,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            ts=ts,
+        )
+        log_event(
+            stage="start",
+            extra={
+                "grouped": isinstance(group_jobs, list),
+                "raw_message_chars": len(str(raw_message)),
+            },
+        )
 
         try:
             if isinstance(group_jobs, list):
-                grouped_result = await asyncio.to_thread(run_grouped_summary_graph, group_jobs)
+                grouped_result = await submit_agent_job(
+                    run_grouped_summary_graph,
+                    group_jobs,
+                    priority=6,
+                    timeout=180.0,
+                    run_in_thread=True,
+                )
                 send_mode = get_summary_send_mode()
                 if send_mode == "multi_message":
+                    sent_count = 0
                     for message_text in format_grouped_summary_messages(grouped_result):
                         await bot.api.post_private_msg(QQnumber, text=message_text)
+                        sent_count += 1
                     text = ""
                 else:
                     text = format_grouped_summary_message(grouped_result)
+                    sent_count = 1 if text else 0
+                summary_decision = {
+                    "grouped": True,
+                    "send_mode": send_mode,
+                    "groups": len(grouped_result.group_results),
+                    "chunks": grouped_result.chunk_count,
+                    "messages": grouped_result.message_count,
+                    "sent_count": sent_count,
+                }
                 print(
                     "[SUMMARY] "
                     f"groups={len(grouped_result.group_results)} | "
@@ -40,8 +83,22 @@ async def handle_task(task: PriorityTask):
                     f"elapsed_ms={grouped_result.elapsed_ms:.2f}"
                 )
             else:
-                final_result = await asyncio.to_thread(run_summary_graph, raw_message)
+                final_result = await submit_agent_job(
+                    run_summary_graph,
+                    raw_message,
+                    priority=6,
+                    timeout=180.0,
+                    run_in_thread=True,
+                )
                 text = format_summary_message(final_result)
+                summary_decision = {
+                    "grouped": False,
+                    "highlights": len(final_result.highlights),
+                    "risks": len(final_result.risks),
+                    "todos": len(final_result.todos),
+                    "sources": len(final_result.sources),
+                    "sent_count": 1 if text else 0,
+                }
                 print(
                     "[SUMMARY] "
                     f"overview={final_result.overview[:80]} | "
@@ -53,7 +110,11 @@ async def handle_task(task: PriorityTask):
                 )
             if text:
                 await bot.api.post_private_msg(QQnumber, text=text)
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="end", latency_ms=elapsed_ms, decision=summary_decision)
         except Exception as error:
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             prepared = preprocess_summary_chunk(raw_message)
             preview_lines = prepared.texts[:5]
             preview_text = "\n".join(preview_lines) if preview_lines else "(无可用文本)"
@@ -71,29 +132,58 @@ async def handle_task(task: PriorityTask):
 
     elif task.type == TaskType.FROWARD:
         ts = str(getattr(task.msg, "ts", ""))
+        chat_type = str(getattr(task.msg, "chat_type", "group"))
         group_id = str(getattr(task.msg, "group_id", ""))
         user_id = str(getattr(task.msg, "user_id", ""))
         user_name = str(getattr(task.msg, "user_name", ""))
         cleaned_message = str(
             getattr(task.msg, "cleaned_message", getattr(task.msg, "raw_message", ""))
         )
+        run_id = generate_run_id()
+        started = perf_counter()
+        log_event = bind_agent_event(
+            agent_name="forward",
+            task_type="FORWARD",
+            run_id=run_id,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            ts=ts,
+        )
+        log_event(stage="start", extra={"cleaned_message_chars": len(cleaned_message)})
         try:
-            result = await asyncio.to_thread(
+            result = await submit_agent_job(
                 run_forward_graph,
                 ts=ts,
                 group_id=group_id,
                 user_id=user_id,
                 user_name=user_name,
                 cleaned_message=cleaned_message,
+                priority=5,
+                timeout=120.0,
+                run_in_thread=True,
             )
             if result.get("should_forward"):
                 await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(
+                stage="end",
+                latency_ms=elapsed_ms,
+                decision={
+                    "should_forward": bool(result.get("should_forward")),
+                    "reason": str(result.get("reason", "")),
+                    "forward_text_chars": len(str(result.get("forward_text", "") or "")),
+                },
+            )
             print(
                 "[FORWARD] "
                 f"group={group_id} user={user_id} should_forward={bool(result.get('should_forward'))} "
                 f"reason={result.get('reason', '')}"
             )
         except Exception as error:
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             print(f"[FORWARD-ERROR] group={group_id} user={user_id} error={error}")
     
     elif task.type == TaskType.AUTO_REPLY:
@@ -107,10 +197,9 @@ async def handle_task(task: PriorityTask):
 
         run_id = generate_run_id()
         started = perf_counter()
-        observe_agent_event(
+        log_event = bind_agent_event(
             agent_name="auto_reply",
             task_type="AUTO_REPLY",
-            stage="start",
             run_id=run_id,
             chat_type=chat_type,
             group_id=group_id,
@@ -118,9 +207,10 @@ async def handle_task(task: PriorityTask):
             user_name=user_name,
             ts=ts,
         )
+        log_event(stage="start")
 
         try:
-            result = await asyncio.to_thread(
+            result = await submit_agent_job(
                 run_auto_reply_pipeline,
                 chat_type=chat_type,
                 group_id=group_id,
@@ -130,18 +220,13 @@ async def handle_task(task: PriorityTask):
                 raw_message=raw_message,
                 cleaned_message=cleaned_message,
                 run_id=run_id,
+                priority=0,
+                timeout=120.0,
+                run_in_thread=True,
             )
             elapsed_ms = (perf_counter() - started) * 1000
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
+            log_event(
                 stage="end",
-                run_id=run_id,
-                chat_type=chat_type,
-                group_id=group_id,
-                user_id=user_id,
-                user_name=user_name,
-                ts=ts,
                 latency_ms=elapsed_ms,
                 decision={
                     "should_reply": bool(result.get("should_reply", False)),
@@ -156,65 +241,21 @@ async def handle_task(task: PriorityTask):
             reply_text = str(result.get("reply_text", "") or "").strip()
 
             if should_reply_flag and reply_text:
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="send_start",
-                    run_id=run_id,
-                    chat_type=chat_type,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    ts=ts,
-                    extra={"reply_length": len(reply_text)},
-                )
+                log_event(stage="send_start", extra={"reply_length": len(reply_text)})
                 try:
                     if chat_type == "group":
                         await bot.api.post_group_msg(group_id, text=reply_text)
                     else:
                         await bot.api.post_private_msg(user_id, text=reply_text)
-                    observe_agent_event(
-                        agent_name="auto_reply",
-                        task_type="AUTO_REPLY",
-                        stage="send_end",
-                        run_id=run_id,
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        user_id=user_id,
-                        user_name=user_name,
-                        ts=ts,
-                        decision={"sent": True, "reply_length": len(reply_text)},
-                    )
+                    log_event(stage="send_end", decision={"sent": True, "reply_length": len(reply_text)})
                 except Exception as send_error:
-                    observe_agent_event(
-                        agent_name="auto_reply",
-                        task_type="AUTO_REPLY",
-                        stage="send_error",
-                        run_id=run_id,
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        user_id=user_id,
-                        user_name=user_name,
-                        ts=ts,
-                        error=str(send_error),
-                    )
+                    log_event(stage="send_error", error=str(send_error))
                     print(
                         "[AUTO_REPLY-SEND-ERROR] "
                         f"chat={chat_type} group={group_id} user={user_id} error={send_error}"
                     )
             elif should_reply_flag:
-                observe_agent_event(
-                    agent_name="auto_reply",
-                    task_type="AUTO_REPLY",
-                    stage="send_skip",
-                    run_id=run_id,
-                    chat_type=chat_type,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                    ts=ts,
-                    decision={"sent": False, "reason": "reply_text_empty"},
-                )
+                log_event(stage="send_skip", decision={"sent": False, "reason": "reply_text_empty"})
 
             print(
                 "[AUTO_REPLY] "
@@ -224,19 +265,7 @@ async def handle_task(task: PriorityTask):
             )
         except Exception as error:
             elapsed_ms = (perf_counter() - started) * 1000
-            observe_agent_event(
-                agent_name="auto_reply",
-                task_type="AUTO_REPLY",
-                stage="error",
-                run_id=run_id,
-                chat_type=chat_type,
-                group_id=group_id,
-                user_id=user_id,
-                user_name=user_name,
-                ts=ts,
-                latency_ms=elapsed_ms,
-                error=str(error),
-            )
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             print(
                 "[AUTO_REPLY-ERROR] "
                 f"chat={chat_type} group={group_id} user={user_id} error={error}"
