@@ -72,6 +72,9 @@ try:
 except (TypeError, ValueError):
     DEFAULT_LLM_TEMPERATURE = 0.2
 
+DEFAULT_SUMMARY_GLOBAL_OVERVIEW = bool(SUMMARY_AGENT_CONFIG.get("summary_global_overview", False))
+DEFAULT_SUMMARY_SEND_MODE = str(SUMMARY_AGENT_CONFIG.get("summary_send_mode") or "single_message").strip().lower()
+
 
 HEADER_RE = re.compile(
     r"^(?:\[chat:(?P<chat_type>[^\]]+)\])?\[group:(?P<group_id>[^\]]+)\]\[user:(?P<user_id>[^\]]+)\](?:\[name:(?P<user_name>[^\]]+)\])?$"
@@ -116,6 +119,39 @@ unique_lines: {unique_lines}
 ---END_MESSAGES---
 
 请基于以上输入，按约定结构化字段输出总结。""")
+
+
+GROUP_REDUCE_SYSTEM_PROMPT = str(SUMMARY_AGENT_CONFIG.get("group_reduce_system_prompt") or """你是项目总结整合助手。
+你会拿到同一个群的多个分块摘要，请将它们整合为该群的单份最终摘要。
+
+要求：
+1) 只能基于输入，不编造事实。
+2) 去重并合并同类项，保留最关键、可执行的信息。
+3) highlights 控制在 3~6 条，risks/todos 各 0~5 条。
+4) overview 用一句中文概括该群今天最重要进展。""")
+
+
+GROUP_REDUCE_USER_PROMPT_TEMPLATE = str(SUMMARY_AGENT_CONFIG.get("group_reduce_user_prompt_template") or """请整合以下同一会话来源的分块摘要。
+chat_type: {chat_type}
+group_id: {group_id}
+chunk_count: {chunk_count}
+
+---BEGIN_CHUNK_SUMMARIES---
+{chunk_summaries}
+---END_CHUNK_SUMMARIES---
+
+请按结构化字段返回该会话的最终摘要。""")
+
+
+GLOBAL_OVERVIEW_SYSTEM_PROMPT = str(SUMMARY_AGENT_CONFIG.get("global_overview_system_prompt") or """你是日报总览助手。
+请基于“各群摘要”生成一段全局总览，用 1~2 句话概括当天整体态势与重点。""")
+
+
+GLOBAL_OVERVIEW_USER_PROMPT_TEMPLATE = str(SUMMARY_AGENT_CONFIG.get("global_overview_user_prompt_template") or """请阅读以下各群摘要并输出全局总览。
+
+---BEGIN_GROUP_SUMMARIES---
+{group_summaries}
+---END_GROUP_SUMMARIES---""")
 
 
 @dataclass
@@ -204,6 +240,27 @@ class SummaryFinalResult:
     elapsed_ms: float = 0.0
 
 
+@dataclass
+class GroupSummaryResult:
+    """单个群（或私聊会话）的最终摘要结果。"""
+
+    chat_type: str
+    group_id: str
+    summary: SummaryFinalResult
+
+
+@dataclass
+class GroupedSummaryResult:
+    """多群聚合摘要结果。"""
+
+    date: str = ""
+    group_results: list[GroupSummaryResult] = field(default_factory=list)
+    global_overview: str = ""
+    chunk_count: int = 0
+    message_count: int = 0
+    elapsed_ms: float = 0.0
+
+
 class ChunkSummarySchema(BaseModel):
     """LLM 结构化输出 Schema（Map 节点）。"""
 
@@ -212,6 +269,10 @@ class ChunkSummarySchema(BaseModel):
     risks: list[str] = Field(default_factory=list)
     todos: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
+
+
+class GlobalOverviewSchema(BaseModel):
+    overview: str = Field(default="")
 
 
 class SummaryGraphState(TypedDict):
@@ -229,7 +290,7 @@ def build_summary_chunks_from_log_lines(
     *,
     chunk_size: int,
     run_mode: str,
-) -> tuple[list[str], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """从日志原始行构建 summary chunks（解析+筛选+分块）。"""
     records: list[dict[str, str]] = []
     for line in lines:
@@ -264,27 +325,43 @@ def build_summary_chunks_from_log_lines(
             grouped_messages[key] = []
         grouped_messages[key].append((ts, message))
 
-    grouped_chunks: list[str] = []
+    grouped_chunks_by_group: dict[tuple[str, str], list[str]] = {}
     for (chat_type, group_id, user_id, user_name), messages in grouped_messages.items():
-        grouped_chunks.extend(
-            _split_source_messages(
-                chat_type=chat_type,
-                group_id=group_id,
-                user_id=user_id,
-                user_name=user_name,
-                messages=messages,
-                chunk_size=chunk_size,
-            )
+        source_chunks = _split_source_messages(
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            messages=messages,
+            chunk_size=chunk_size,
         )
+        group_key = (chat_type, group_id)
+        if group_key not in grouped_chunks_by_group:
+            grouped_chunks_by_group[group_key] = []
+        grouped_chunks_by_group[group_key].extend(source_chunks)
 
-    final_chunks = _merge_small_chunks(grouped_chunks, chunk_size)
+    group_jobs: list[dict[str, Any]] = []
+    merged_chunk_total = 0
+    for chat_type, group_id in sorted(grouped_chunks_by_group.keys()):
+        merged_chunks = _merge_small_chunks(grouped_chunks_by_group[(chat_type, group_id)], chunk_size)
+        if not merged_chunks:
+            continue
+        group_jobs.append(
+            {
+                "chat_type": chat_type,
+                "group_id": group_id,
+                "chunks": merged_chunks,
+            }
+        )
+        merged_chunk_total += len(merged_chunks)
+
     if meta.get("run_mode") == "manual" and meta.get("cursor_key") and meta.get("cursor_after"):
         save_summary_cursor(str(meta["cursor_key"]), str(meta["cursor_after"]))
 
-    meta["group_count"] = str(len(grouped_messages))
-    meta["group_chunks"] = str(len(grouped_chunks))
-    meta["final_chunks"] = str(len(final_chunks))
-    return final_chunks, meta
+    meta["group_count"] = str(len(group_jobs))
+    meta["group_chunks"] = str(sum(len(chunks) for chunks in grouped_chunks_by_group.values()))
+    meta["final_chunks"] = str(merged_chunk_total)
+    return group_jobs, meta
 
 
 def filter_records_for_summary(
@@ -294,6 +371,15 @@ def filter_records_for_summary(
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
     """按 chat scope + cursor 筛选日志记录。"""
     scope = _normalize_scope(str(SUMMARY_AGENT_CONFIG.get("summary_chat_scope") or "group"))
+    group_filter_mode = _normalize_group_filter_mode(
+        str(SUMMARY_AGENT_CONFIG.get("summary_group_filter_mode") or "all")
+    )
+    configured_group_ids = SUMMARY_AGENT_CONFIG.get("summary_group_ids")
+    group_id_set = {
+        str(item).strip()
+        for item in (configured_group_ids if isinstance(configured_group_ids, list) else [])
+        if str(item).strip()
+    }
     cursor_key = f"manual_{scope}"
     cursor_before = ""
     normalized_run_mode = str(run_mode or "manual").strip().lower()
@@ -315,6 +401,13 @@ def filter_records_for_summary(
         if scope != "all" and chat_type != scope:
             continue
 
+        group_id = str(record.get("group_id", UNKNOWN_GROUP)).strip() or UNKNOWN_GROUP
+        if chat_type == "group" and group_id_set:
+            if group_filter_mode == "include" and group_id not in group_id_set:
+                continue
+            if group_filter_mode == "exclude" and group_id in group_id_set:
+                continue
+
         ts = str(record.get("ts", "")).strip()
         current_dt = _parse_iso_dt(ts)
         if normalized_run_mode == "auto":
@@ -330,6 +423,7 @@ def filter_records_for_summary(
 
         normalized = dict(record)
         normalized["chat_type"] = chat_type
+        normalized["group_id"] = group_id
         normalized["message"] = str(record.get("message", "")).strip()
         filtered_records.append(normalized)
 
@@ -501,6 +595,152 @@ def run_summary_graph(
     return final_result
 
 
+def run_grouped_summary_graph(
+    group_jobs: list[dict[str, Any]],
+    *,
+    model_name: str | None = None,
+    temperature: float = DEFAULT_LLM_TEMPERATURE,
+) -> GroupedSummaryResult:
+    """按群执行 summary（每群可含多个 chunk），并聚合为单次输出结果。"""
+    started_at = perf_counter()
+    today_text = datetime.now().strftime("%Y-%m-%d")
+    group_results: list[GroupSummaryResult] = []
+    total_chunks = 0
+    total_messages = 0
+    llm = _build_llm(model_name=model_name, temperature=temperature)
+    structured_chunk_reducer = llm.with_structured_output(ChunkSummarySchema)
+
+    for job in group_jobs:
+        if not isinstance(job, dict):
+            continue
+
+        chat_type = _normalize_chat_type(job.get("chat_type", "group"))
+        group_id = str(job.get("group_id", UNKNOWN_GROUP)).strip() or UNKNOWN_GROUP
+        raw_chunks = job.get("chunks")
+        chunk_texts = [str(item) for item in raw_chunks] if isinstance(raw_chunks, list) else []
+        chunk_texts = [item for item in chunk_texts if item.strip()]
+        if not chunk_texts:
+            continue
+
+        chunk_results: list[SummaryFinalResult] = []
+        for chunk_index, chunk_text in enumerate(chunk_texts, start=1):
+            chunk_results.append(
+                run_summary_graph(
+                    chunk_text,
+                    chunk_index=chunk_index,
+                    model_name=model_name,
+                    temperature=temperature,
+                )
+            )
+
+        merged_sources: list[str] = []
+        merged_trace_lines: list[str] = []
+        merged_map_results: list[SummaryMapResult] = []
+        chunk_summary_lines: list[str] = []
+        for idx, chunk_result in enumerate(chunk_results, start=1):
+            merged_sources.extend(chunk_result.sources)
+            merged_trace_lines.extend(chunk_result.trace_lines)
+            merged_map_results.extend(chunk_result.map_results)
+            chunk_summary_lines.append(
+                "\n".join(
+                    [
+                        f"chunk#{idx}",
+                        f"overview: {chunk_result.overview or '（无）'}",
+                        "highlights:",
+                        *[f"- {item}" for item in _safe_list(chunk_result.highlights, max_items=10)],
+                        "risks:",
+                        *[f"- {item}" for item in _safe_list(chunk_result.risks, max_items=10)],
+                        "todos:",
+                        *[f"- {item}" for item in _safe_list(chunk_result.todos, max_items=10)],
+                    ]
+                )
+            )
+
+        if len(chunk_results) == 1:
+            reduced_overview = chunk_results[0].overview
+            reduced_highlights = chunk_results[0].highlights
+            reduced_risks = chunk_results[0].risks
+            reduced_todos = chunk_results[0].todos
+        else:
+            reduce_messages = [
+                SystemMessage(content=GROUP_REDUCE_SYSTEM_PROMPT),
+                HumanMessage(
+                    content=GROUP_REDUCE_USER_PROMPT_TEMPLATE.format(
+                        chat_type=chat_type,
+                        group_id=group_id,
+                        chunk_count=len(chunk_results),
+                        chunk_summaries="\n\n".join(chunk_summary_lines),
+                    )
+                ),
+            ]
+            reduce_result = structured_chunk_reducer.invoke(reduce_messages)
+            reduced_overview = (reduce_result.overview or "").strip() or "今日暂无可总结内容。"
+            reduced_highlights = _safe_list(reduce_result.highlights, max_items=6)
+            reduced_risks = _safe_list(reduce_result.risks, max_items=5)
+            reduced_todos = _safe_list(reduce_result.todos, max_items=5)
+
+        group_summary = SummaryFinalResult(
+            date=today_text,
+            overview=reduced_overview,
+            highlights=_safe_list(reduced_highlights, max_items=6),
+            risks=_safe_list(reduced_risks, max_items=5),
+            todos=_safe_list(reduced_todos, max_items=5),
+            chunk_count=len(chunk_results),
+            message_count=sum(item.message_count for item in chunk_results),
+            sources=_safe_list(merged_sources, max_items=200),
+            trace_lines=_safe_list(merged_trace_lines, max_items=20),
+            map_results=merged_map_results,
+        )
+        group_results.append(
+            GroupSummaryResult(
+                chat_type=chat_type,
+                group_id=group_id,
+                summary=group_summary,
+            )
+        )
+        total_chunks += group_summary.chunk_count
+        total_messages += group_summary.message_count
+
+    global_overview = ""
+    if DEFAULT_SUMMARY_GLOBAL_OVERVIEW and group_results:
+        try:
+            structured_overview_llm = llm.with_structured_output(GlobalOverviewSchema)
+            group_summary_text = "\n\n".join(
+                [
+                    "\n".join(
+                        [
+                            f"group={item.group_id}, chat_type={item.chat_type}",
+                            f"overview: {item.summary.overview or '（无）'}",
+                            "highlights:",
+                            *[f"- {h}" for h in _safe_list(item.summary.highlights, max_items=8)],
+                            "risks:",
+                            *[f"- {r}" for r in _safe_list(item.summary.risks, max_items=8)],
+                            "todos:",
+                            *[f"- {t}" for t in _safe_list(item.summary.todos, max_items=8)],
+                        ]
+                    )
+                    for item in group_results
+                ]
+            )
+            global_messages = [
+                SystemMessage(content=GLOBAL_OVERVIEW_SYSTEM_PROMPT),
+                HumanMessage(content=GLOBAL_OVERVIEW_USER_PROMPT_TEMPLATE.format(group_summaries=group_summary_text)),
+            ]
+            overview_result = structured_overview_llm.invoke(global_messages)
+            global_overview = (overview_result.overview or "").strip()
+        except Exception:
+            global_overview = ""
+
+    return GroupedSummaryResult(
+        date=today_text,
+        group_results=group_results,
+        global_overview=global_overview,
+        chunk_count=total_chunks,
+        message_count=total_messages,
+        elapsed_ms=(perf_counter() - started_at) * 1000,
+    )
+
+
 def format_summary_message(result: SummaryFinalResult) -> str:
     """将最终结果格式化为可直接发送给 QQ 的文本。"""
     date_text = result.date or datetime.now().strftime("%Y-%m-%d")
@@ -525,6 +765,94 @@ def format_summary_message(result: SummaryFinalResult) -> str:
         f"【待办】\n{todo_text}\n\n"
         f"（chunks={result.chunk_count}, messages={result.message_count}, sources={len(result.sources)}, elapsed={result.elapsed_ms:.0f}ms）"
     )
+
+
+def format_grouped_summary_message(result: GroupedSummaryResult) -> str:
+    """将按群聚合后的 summary 结果格式化为私聊可读文本。"""
+    date_text = result.date or datetime.now().strftime("%Y-%m-%d")
+    if not result.group_results:
+        return f"【每日总结 {date_text}】\n今日暂无可总结内容。"
+
+    lines: list[str] = [f"【每日总结 {date_text}】"]
+    if result.global_overview.strip():
+        lines.append(f"全局总览：{result.global_overview.strip()}")
+    for group_result in result.group_results:
+        summary = group_result.summary
+        source_label = (
+            f"私聊({group_result.group_id})"
+            if group_result.chat_type == "private"
+            else f"{group_result.group_id}群"
+        )
+
+        highlights = _safe_list(summary.highlights, max_items=6)
+        risks = _safe_list(summary.risks, max_items=5)
+        todos = _safe_list(summary.todos, max_items=5)
+        trace_lines = _safe_list(summary.trace_lines, max_items=5)
+
+        highlight_text = "\n".join(f"- {item}" for item in highlights) or "- （暂无）"
+        risk_text = "\n".join(f"- {item}" for item in risks) or "- （暂无）"
+        todo_text = "\n".join(f"- {item}" for item in todos) or "- （暂无）"
+        trace_text = "\n".join(f"- {item}" for item in trace_lines) or "- （暂无）"
+
+        lines.append(
+            f"\n【{source_label}】\n"
+            f"概览：{summary.overview or '（暂无概览）'}\n"
+            f"溯源：\n{trace_text}\n"
+            f"关键要点：\n{highlight_text}\n"
+            f"风险：\n{risk_text}\n"
+            f"待办：\n{todo_text}\n"
+            f"（chunks={summary.chunk_count}, messages={summary.message_count}, sources={len(summary.sources)}）"
+        )
+
+    lines.append(
+        f"\n（groups={len(result.group_results)}, total_chunks={result.chunk_count}, total_messages={result.message_count}, elapsed={result.elapsed_ms:.0f}ms）"
+    )
+    return "\n".join(lines)
+
+
+def format_grouped_summary_messages(result: GroupedSummaryResult) -> list[str]:
+    """多消息发送模式：返回消息列表（先全局，再逐群）。"""
+    date_text = result.date or datetime.now().strftime("%Y-%m-%d")
+    if not result.group_results:
+        return [f"【每日总结 {date_text}】\n今日暂无可总结内容。"]
+
+    messages: list[str] = [
+        f"【每日总结 {date_text}】\n"
+        f"{('全局总览：' + result.global_overview) if result.global_overview.strip() else '（未启用全局总览）'}\n"
+        f"（groups={len(result.group_results)}, total_chunks={result.chunk_count}, total_messages={result.message_count}）"
+    ]
+    for group_result in result.group_results:
+        summary = group_result.summary
+        source_label = (
+            f"私聊({group_result.group_id})"
+            if group_result.chat_type == "private"
+            else f"{group_result.group_id}群"
+        )
+        highlights = _safe_list(summary.highlights, max_items=6)
+        risks = _safe_list(summary.risks, max_items=5)
+        todos = _safe_list(summary.todos, max_items=5)
+        trace_lines = _safe_list(summary.trace_lines, max_items=5)
+        trace_text = "\n".join(f"- {item}" for item in trace_lines) if trace_lines else "- （暂无）"
+        highlight_text = "\n".join(f"- {item}" for item in highlights) if highlights else "- （暂无）"
+        risk_text = "\n".join(f"- {item}" for item in risks) if risks else "- （暂无）"
+        todo_text = "\n".join(f"- {item}" for item in todos) if todos else "- （暂无）"
+        messages.append(
+            f"【{source_label}】\n"
+            f"概览：{summary.overview or '（暂无概览）'}\n"
+            f"溯源：\n{trace_text}\n"
+            f"关键要点：\n{highlight_text}\n"
+            f"风险：\n{risk_text}\n"
+            f"待办：\n{todo_text}\n"
+            f"（chunks={summary.chunk_count}, messages={summary.message_count}, sources={len(summary.sources)}）"
+        )
+    return messages
+
+
+def get_summary_send_mode() -> str:
+    mode = (DEFAULT_SUMMARY_SEND_MODE or "single_message").strip().lower()
+    if mode in {"single_message", "multi_message"}:
+        return mode
+    return "single_message"
 
 
 def _build_summary_graph(*, model_name: str | None, temperature: float):
@@ -885,6 +1213,13 @@ def _normalize_scope(scope: str) -> str:
     if value in {"group", "private", "all"}:
         return value
     return "group"
+
+
+def _normalize_group_filter_mode(mode: str) -> str:
+    value = str(mode or "").strip().lower()
+    if value in {"all", "include", "exclude"}:
+        return value
+    return "all"
 
 
 def _parse_iso_dt(ts: str | None) -> datetime | None:

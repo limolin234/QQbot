@@ -204,7 +204,7 @@ async def daily_summary(run_mode: str = "manual"):
     说明：
     - 当前格式为 JSONL：`ts/group_id/user_id/user_name/chat_type/cleaned_message`。
     - 兼容旧文本格式：`group_id|user_id:message` 与 `group_id:message`。
-    - 每个最终 chunk 会写入 `GroupMessage.raw_message` 作为 summary 工作流输入。
+    - 预处理后输出 `group_jobs`（每群若干 chunk），由 summary 工作流按群执行并统一合并输出。
     """
     file_path = LOG_FILE_PATH
     chunk_size = 10000
@@ -218,12 +218,12 @@ async def daily_summary(run_mode: str = "manual"):
                 print("没有日志需要处理")
                 return
 
-        final_chunks, meta = build_summary_chunks_from_log_lines(
+        group_jobs, meta = build_summary_chunks_from_log_lines(
             raw_lines,
             chunk_size=chunk_size,
             run_mode=run_mode,
         )
-        if not final_chunks:
+        if not group_jobs:
             print(
                 "没有需要汇总的消息: "
                 f"scope={meta.get('scope', 'group')}, "
@@ -232,13 +232,17 @@ async def daily_summary(run_mode: str = "manual"):
             )
             return
 
-        for chunk in final_chunks:
-            msg = SimpleNamespace(raw_message=chunk)
-            await scheduler.RTpush(msg, TaskType.SUMMARY) # 已改成RTpush
+        msg = SimpleNamespace(
+            group_jobs=group_jobs,
+            summary_meta=meta,
+            run_mode=run_mode,
+            raw_message="",
+        )
+        await scheduler.RTpush(msg, TaskType.SUMMARY)
 
         print(
             f"日志分组完成: groups={meta.get('group_count', '0')}, "
-            f"group_chunks={meta.get('group_chunks', '0')}, final_chunks={len(final_chunks)}, "
+            f"group_chunks={meta.get('group_chunks', '0')}, final_chunks={meta.get('final_chunks', '0')}, "
             f"scope={meta.get('scope', 'group')}, mode={meta.get('run_mode', run_mode)}, "
             f"cursor={meta.get('cursor_after', meta.get('cursor_before', '(none)'))}"
         )

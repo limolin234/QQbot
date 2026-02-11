@@ -25,6 +25,24 @@ summary_config:
     # summary_chat_scope：配置需要总结消息的范围
     # 可选值：group(仅总结群聊消息) / private(仅私聊) / all(群聊+私聊)
 
+    summary_group_filter_mode: include
+    # summary_group_filter_mode：群号过滤模式（仅对 group 生效）
+    # all: 不按群号过滤（默认，汇总全部群）
+    # include: 仅汇总 summary_group_ids 列表中的群
+    # exclude: 排除 summary_group_ids 列表中的群
+
+    summary_group_ids: ["1075786046", "2136118"]
+    # summary_group_ids：群号列表，配合 summary_group_filter_mode 使用
+    # 元素为字符串
+
+    summary_global_overview: true
+    # summary_global_overview：是否在“各群摘要”之上再做一次全局总览（会增加一次 LLM 调用）
+
+    summary_send_mode: multi_message
+    # summary_send_mode：摘要发送模式
+    # single_message: 合并为一条消息发送
+    # multi_message: 先发总览，再按群逐条发送
+
 forward_config:
   file_name: forward.py
   config:
@@ -65,7 +83,7 @@ auto_reply_config:
     # rules：自动回复规则列表（每个元素对应一个群聊或私聊目标）
     # 你可以按需添加多个规则，逐条匹配。
     rules:
-      - enabled: true
+      - enabled: false
         chat_type: group
         number: "1075786046"
 
@@ -99,7 +117,7 @@ auto_reply_config:
           3) 语气自然友好，默认使用中文。
           4) 纯文本，不用markdown语言。
 
-      - enabled: true
+      - enabled: false
         chat_type: private
         number: "3291053545"
         trigger_mode: "always"

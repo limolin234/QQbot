@@ -7,29 +7,52 @@ from workflows.agent_observe import generate_run_id, observe_agent_event
 from workflows.auto_reply import run_auto_reply_pipeline
 from workflows.forward import run_forward_graph
 from workflows.summary import (
+    format_grouped_summary_message,
+    format_grouped_summary_messages,
     format_summary_message,
+    get_summary_send_mode,
     preprocess_summary_chunk,
+    run_grouped_summary_graph,
     run_summary_graph,
 )
 
 
 async def handle_task(task: PriorityTask):
     if task.type == TaskType.SUMMARY:
+        group_jobs = getattr(task.msg, "group_jobs", None)
         raw_message = getattr(task.msg, "raw_message", "") or ""
 
         try:
-            final_result = await asyncio.to_thread(run_summary_graph, raw_message)
-            text = format_summary_message(final_result)
-            await bot.api.post_private_msg(QQnumber, text=text)
-            print(
-                "[SUMMARY] "
-                f"overview={final_result.overview[:80]} | "
-                f"highlights={len(final_result.highlights)} | "
-                f"risks={len(final_result.risks)} | "
-                f"todos={len(final_result.todos)} | "
-                f"sources={len(final_result.sources)} | "
-                f"elapsed_ms={final_result.elapsed_ms:.2f}"
-            )
+            if isinstance(group_jobs, list):
+                grouped_result = await asyncio.to_thread(run_grouped_summary_graph, group_jobs)
+                send_mode = get_summary_send_mode()
+                if send_mode == "multi_message":
+                    for message_text in format_grouped_summary_messages(grouped_result):
+                        await bot.api.post_private_msg(QQnumber, text=message_text)
+                    text = ""
+                else:
+                    text = format_grouped_summary_message(grouped_result)
+                print(
+                    "[SUMMARY] "
+                    f"groups={len(grouped_result.group_results)} | "
+                    f"chunks={grouped_result.chunk_count} | "
+                    f"messages={grouped_result.message_count} | "
+                    f"elapsed_ms={grouped_result.elapsed_ms:.2f}"
+                )
+            else:
+                final_result = await asyncio.to_thread(run_summary_graph, raw_message)
+                text = format_summary_message(final_result)
+                print(
+                    "[SUMMARY] "
+                    f"overview={final_result.overview[:80]} | "
+                    f"highlights={len(final_result.highlights)} | "
+                    f"risks={len(final_result.risks)} | "
+                    f"todos={len(final_result.todos)} | "
+                    f"sources={len(final_result.sources)} | "
+                    f"elapsed_ms={final_result.elapsed_ms:.2f}"
+                )
+            if text:
+                await bot.api.post_private_msg(QQnumber, text=text)
         except Exception as error:
             prepared = preprocess_summary_chunk(raw_message)
             preview_lines = prepared.texts[:5]
