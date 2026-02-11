@@ -20,8 +20,33 @@ from workflows.summary import (
 
 async def handle_task(task: PriorityTask):
     if task.type == TaskType.SUMMARY:
+        ts = str(getattr(task.msg, "ts", ""))
+        chat_type = str(getattr(task.msg, "chat_type", ""))
+        group_id = str(getattr(task.msg, "group_id", ""))
+        user_id = str(getattr(task.msg, "user_id", ""))
+        user_name = str(getattr(task.msg, "user_name", ""))
         group_jobs = getattr(task.msg, "group_jobs", None)
         raw_message = getattr(task.msg, "raw_message", "") or ""
+        summary_decision: dict[str, object] = {}
+        run_id = generate_run_id()
+        started = perf_counter()
+        log_event = bind_agent_event(
+            agent_name="summary",
+            task_type="SUMMARY",
+            run_id=run_id,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            ts=ts,
+        )
+        log_event(
+            stage="start",
+            extra={
+                "grouped": isinstance(group_jobs, list),
+                "raw_message_chars": len(str(raw_message)),
+            },
+        )
 
         try:
             if isinstance(group_jobs, list):
@@ -34,11 +59,22 @@ async def handle_task(task: PriorityTask):
                 )
                 send_mode = get_summary_send_mode()
                 if send_mode == "multi_message":
+                    sent_count = 0
                     for message_text in format_grouped_summary_messages(grouped_result):
                         await bot.api.post_private_msg(QQnumber, text=message_text)
+                        sent_count += 1
                     text = ""
                 else:
                     text = format_grouped_summary_message(grouped_result)
+                    sent_count = 1 if text else 0
+                summary_decision = {
+                    "grouped": True,
+                    "send_mode": send_mode,
+                    "groups": len(grouped_result.group_results),
+                    "chunks": grouped_result.chunk_count,
+                    "messages": grouped_result.message_count,
+                    "sent_count": sent_count,
+                }
                 print(
                     "[SUMMARY] "
                     f"groups={len(grouped_result.group_results)} | "
@@ -55,6 +91,14 @@ async def handle_task(task: PriorityTask):
                     run_in_thread=True,
                 )
                 text = format_summary_message(final_result)
+                summary_decision = {
+                    "grouped": False,
+                    "highlights": len(final_result.highlights),
+                    "risks": len(final_result.risks),
+                    "todos": len(final_result.todos),
+                    "sources": len(final_result.sources),
+                    "sent_count": 1 if text else 0,
+                }
                 print(
                     "[SUMMARY] "
                     f"overview={final_result.overview[:80]} | "
@@ -66,7 +110,11 @@ async def handle_task(task: PriorityTask):
                 )
             if text:
                 await bot.api.post_private_msg(QQnumber, text=text)
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="end", latency_ms=elapsed_ms, decision=summary_decision)
         except Exception as error:
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             prepared = preprocess_summary_chunk(raw_message)
             preview_lines = prepared.texts[:5]
             preview_text = "\n".join(preview_lines) if preview_lines else "(无可用文本)"
@@ -84,12 +132,26 @@ async def handle_task(task: PriorityTask):
 
     elif task.type == TaskType.FROWARD:
         ts = str(getattr(task.msg, "ts", ""))
+        chat_type = str(getattr(task.msg, "chat_type", "group"))
         group_id = str(getattr(task.msg, "group_id", ""))
         user_id = str(getattr(task.msg, "user_id", ""))
         user_name = str(getattr(task.msg, "user_name", ""))
         cleaned_message = str(
             getattr(task.msg, "cleaned_message", getattr(task.msg, "raw_message", ""))
         )
+        run_id = generate_run_id()
+        started = perf_counter()
+        log_event = bind_agent_event(
+            agent_name="forward",
+            task_type="FORWARD",
+            run_id=run_id,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            ts=ts,
+        )
+        log_event(stage="start", extra={"cleaned_message_chars": len(cleaned_message)})
         try:
             result = await submit_agent_job(
                 run_forward_graph,
@@ -104,12 +166,24 @@ async def handle_task(task: PriorityTask):
             )
             if result.get("should_forward"):
                 await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(
+                stage="end",
+                latency_ms=elapsed_ms,
+                decision={
+                    "should_forward": bool(result.get("should_forward")),
+                    "reason": str(result.get("reason", "")),
+                    "forward_text_chars": len(str(result.get("forward_text", "") or "")),
+                },
+            )
             print(
                 "[FORWARD] "
                 f"group={group_id} user={user_id} should_forward={bool(result.get('should_forward'))} "
                 f"reason={result.get('reason', '')}"
             )
         except Exception as error:
+            elapsed_ms = (perf_counter() - started) * 1000
+            log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
             print(f"[FORWARD-ERROR] group={group_id} user={user_id} error={error}")
     
     elif task.type == TaskType.AUTO_REPLY:
