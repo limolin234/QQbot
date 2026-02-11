@@ -25,7 +25,13 @@ async def handle_task(task: PriorityTask):
 
         try:
             if isinstance(group_jobs, list):
-                grouped_result = await asyncio.to_thread(run_grouped_summary_graph, group_jobs)
+                grouped_result = await submit_agent_job(
+                    run_grouped_summary_graph,
+                    group_jobs,
+                    priority=6,
+                    timeout=180.0,
+                    run_in_thread=True,
+                )
                 send_mode = get_summary_send_mode()
                 if send_mode == "multi_message":
                     for message_text in format_grouped_summary_messages(grouped_result):
@@ -41,7 +47,13 @@ async def handle_task(task: PriorityTask):
                     f"elapsed_ms={grouped_result.elapsed_ms:.2f}"
                 )
             else:
-                final_result = await asyncio.to_thread(run_summary_graph, raw_message)
+                final_result = await submit_agent_job(
+                    run_summary_graph,
+                    raw_message,
+                    priority=6,
+                    timeout=180.0,
+                    run_in_thread=True,
+                )
                 text = format_summary_message(final_result)
                 print(
                     "[SUMMARY] "
@@ -79,13 +91,16 @@ async def handle_task(task: PriorityTask):
             getattr(task.msg, "cleaned_message", getattr(task.msg, "raw_message", ""))
         )
         try:
-            result = await asyncio.to_thread(
+            result = await submit_agent_job(
                 run_forward_graph,
                 ts=ts,
                 group_id=group_id,
                 user_id=user_id,
                 user_name=user_name,
                 cleaned_message=cleaned_message,
+                priority=5,
+                timeout=120.0,
+                run_in_thread=True,
             )
             if result.get("should_forward"):
                 await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
