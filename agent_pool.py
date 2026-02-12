@@ -37,9 +37,12 @@ class PriorityScheduler:
         self._counter = 0
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Condition(self._lock)
+        self._closed = False
 
     async def put(self, task: Task) -> None:
         async with self._not_empty:
+            if self._closed:
+                raise RuntimeError("scheduler is closed")
             if self.maxsize > 0 and len(self._queue) >= self.maxsize:
                 raise asyncio.QueueFull()
             task.order = self._counter
@@ -47,11 +50,25 @@ class PriorityScheduler:
             heapq.heappush(self._queue, task)
             self._not_empty.notify()
 
-    async def pop(self) -> Task:
+    async def pop(self) -> Task | None:
         async with self._not_empty:
             while not self._queue:
+                if self._closed:
+                    return None
                 await self._not_empty.wait()
             return heapq.heappop(self._queue)
+
+    async def drain(self) -> list[Task]:
+        async with self._not_empty:
+            drained: list[Task] = []
+            while self._queue:
+                drained.append(heapq.heappop(self._queue))
+            return drained
+
+    async def close(self) -> None:
+        async with self._not_empty:
+            self._closed = True
+            self._not_empty.notify_all()
 
     def qsize(self): return len(self._queue)
     def empty(self): return len(self._queue) == 0
@@ -64,6 +81,7 @@ class PriorityScheduler:
 _scheduler: Optional[PriorityScheduler] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _worker_tasks: List[asyncio.Task] = []
+_worker_counter = 0
 
 # LLM 处理器（默认为 None，启动后必须注册）
 _llm_handler: Optional[Callable[[Any], Coroutine[Any, Any, Any]]] = None
@@ -100,7 +118,12 @@ async def _worker(worker_id: int):
     while True:
         task = None
         try:
-            task = await _scheduler.pop()
+            task = await _scheduler.pop() # type: ignore[union-attr]
+            if task is None:
+                break
+            if task.data.get("type") == "__retire_worker__":
+                logger.info("Worker-%d 收到缩容信号，退出", worker_id)
+                break
             try:
                 result = await _execute_task_payload(task.data)
                 if task.future and not task.future.done():
@@ -115,6 +138,19 @@ async def _worker(worker_id: int):
             break
         except Exception:
             logger.exception("Worker-%d 内部异常", worker_id)
+
+
+def _compact_worker_tasks() -> None:
+    global _worker_tasks
+    _worker_tasks = [task for task in _worker_tasks if not task.done()]
+
+
+def _spawn_workers(count: int) -> None:
+    global _worker_counter
+    for _ in range(count):
+        worker_id = _worker_counter
+        _worker_counter += 1
+        _worker_tasks.append(asyncio.create_task(_worker(worker_id), name=f"AgentWorker-{worker_id}"))
 
 
 async def _execute_task_payload(data: dict[str, Any]) -> Any:
@@ -157,7 +193,7 @@ async def setup_agent_pool(
     loop: Optional[asyncio.AbstractEventLoop] = None
 ) -> None:
     """启动代理池（只需要 Worker 数量和队列容量）"""
-    global _scheduler, _loop, _worker_tasks
+    global _scheduler, _loop, _worker_tasks, _worker_counter
 
     if _scheduler is not None:
         logger.warning("Agent 池已启动，忽略重复调用")
@@ -165,26 +201,104 @@ async def setup_agent_pool(
 
     _scheduler = PriorityScheduler(maxsize=maxsize)
     _loop = loop or asyncio.get_running_loop()
-    _worker_tasks = [
-        asyncio.create_task(_worker(i), name=f"AgentWorker-{i}")
-        for i in range(worker_count)
-    ]
+    _worker_tasks = []
+    _worker_counter = 0
+    _spawn_workers(worker_count)
     logger.info("✅ Agent 池已启动，Worker 数量=%d，队列容量=%s",
                 worker_count, maxsize if maxsize > 0 else "无限制")
 
 
-async def stop_agent_pool() -> None:
-    """停止代理池"""
+async def resize_agent_pool(
+    worker_count: int,
+    *,
+    graceful: bool = True,
+    wait_timeout: float = 10.0,
+) -> None:
+    """动态调整 Agent 池 worker 数量。"""
+    if worker_count <= 0:
+        raise ValueError("worker_count must be > 0")
+    if _scheduler is None:
+        raise RuntimeError("❌ Agent 池未启动，请先调用 setup_agent_pool()")
+
+    _compact_worker_tasks()
+    current_count = len(_worker_tasks)
+    if worker_count == current_count:
+        return
+
+    if worker_count > current_count:
+        _spawn_workers(worker_count - current_count)
+        logger.info("Agent 池扩容完成: %d -> %d", current_count, worker_count)
+        return
+
+    to_remove = current_count - worker_count
+    if graceful:
+        for _ in range(to_remove):
+            retire_task = Task(
+                priority=0,
+                data={"type": "__retire_worker__"},
+                future=None,
+            )
+            await _scheduler.put(retire_task)
+
+        end_time = asyncio.get_running_loop().time() + max(wait_timeout, 0.1)
+        while True:
+            _compact_worker_tasks()
+            if len(_worker_tasks) <= worker_count:
+                break
+            if asyncio.get_running_loop().time() >= end_time:
+                logger.warning("Agent 池缩容等待超时，继续执行当前状态")
+                break
+            await asyncio.sleep(0.05)
+        logger.info("Agent 池平滑缩容完成: %d -> %d", current_count, len(_worker_tasks))
+        return
+
+    cancelled_workers = _worker_tasks[-to_remove:]
+    for worker in cancelled_workers:
+        worker.cancel()
+    await asyncio.gather(*cancelled_workers, return_exceptions=True)
+    _compact_worker_tasks()
+    logger.info("Agent 池强制缩容完成: %d -> %d", current_count, len(_worker_tasks))
+
+
+async def stop_agent_pool(
+    *,
+    wait_for_pending: bool = True,
+    drop_pending: bool = False,
+) -> list[dict[str, Any]]:
+    """停止代理池并按需返回未执行任务信息。"""
     global _worker_tasks, _scheduler, _loop, _llm_handler
-    for t in _worker_tasks:
-        t.cancel()
+    if _scheduler is None:
+        return []
+
+    drained_tasks: list[Task] = []
+    if drop_pending or not wait_for_pending:
+        drained_tasks = await _scheduler.drain()
+        for task in drained_tasks:
+            if task.future and not task.future.done():
+                task.future.cancel()
+
+    await _scheduler.close()
+
+    if not wait_for_pending:
+        for task in _worker_tasks:
+            task.cancel()
+
     if _worker_tasks:
         await asyncio.gather(*_worker_tasks, return_exceptions=True)
     _worker_tasks.clear()
     _scheduler = None
     _loop = None
     _llm_handler = None
-    logger.info("🛑 Agent 池已停止")
+    pending_info = [
+        {
+            "priority": task.priority,
+            "task_type": str(task.data.get("type", "")),
+            "task_id": task.task_id,
+        }
+        for task in drained_tasks
+    ]
+    logger.info("🛑 Agent 池已停止，未执行任务=%d", len(pending_info))
+    return pending_info
 
 
 async def _submit_pool_task(
@@ -204,6 +318,8 @@ async def _submit_pool_task(
         await _scheduler.put(task)
     except asyncio.QueueFull as error:
         raise RuntimeError("Agent 池队列已满，请求被拒绝") from error
+    except RuntimeError as error:
+        raise RuntimeError("Agent 池已停止，拒绝接收新任务") from error
 
     try:
         return await asyncio.wait_for(future, timeout=timeout)
@@ -274,6 +390,7 @@ async def agentp_LLM(
 # ----------------------------------------------------------------------
 __all__ = [
     "setup_agent_pool",
+    "resize_agent_pool",
     "stop_agent_pool",
     "submit_agent_job",
     "agentp_LLM",
