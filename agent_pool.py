@@ -3,7 +3,7 @@ import heapq
 import inspect
 import logging
 from time import time
-from typing import Any, Callable, Coroutine, List, Optional
+from typing import Any, Callable, List, Optional
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -83,33 +83,6 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 _worker_tasks: List[asyncio.Task] = []
 _worker_counter = 0
 
-# LLM 处理器（默认为 None，启动后必须注册）
-_llm_handler: Optional[Callable[[Any], Coroutine[Any, Any, Any]]] = None
-
-
-# ----------------------------------------------------------------------
-# 注册接口（装饰器 + 函数）
-# ----------------------------------------------------------------------
-def register_llm_handler(func: Optional[Callable[[Any], Coroutine]] = None):
-    """
-    装饰器：注册 LLM 处理器。
-    用法：
-        @register_llm_handler
-        async def my_llm_handler(data): ...
-    或：
-        register_llm_handler(my_llm_handler)
-    """
-    def decorator(f: Callable[[Any], Coroutine]) -> Callable[[Any], Coroutine]:
-        global _llm_handler
-        _llm_handler = f
-        logger.info("LLM 处理器已注册: %s", f.__name__)
-        return f
-
-    if func is None:
-        return decorator
-    else:
-        return decorator(func)
-
 
 # ----------------------------------------------------------------------
 # Worker 池（固定数量，串行执行）
@@ -155,11 +128,9 @@ def _spawn_workers(count: int) -> None:
 
 async def _execute_task_payload(data: dict[str, Any]) -> Any:
     """
-    - 根据 payload["type"] 分支：
     - callable：执行函数（submit_agent_job(...) 走这个分支），支持：
         - run_in_thread=True 时用 asyncio.to_thread 跑同步阻塞函数
-        - 否则直接调用；若返回 awaitable 就 await 
-    - llm：走老的 _llm_handler（给 agentp_LLM(...) 兼容保留）
+        - 否则直接调用；若返回 awaitable 就 await
     """
     payload_type = str(data.get("type", ""))
     if payload_type == "callable":
@@ -175,11 +146,6 @@ async def _execute_task_payload(data: dict[str, Any]) -> Any:
         if inspect.isawaitable(result):
             return await result
         return result
-
-    if payload_type == "llm":
-        if _llm_handler is None:
-            raise RuntimeError("LLM 处理器未注册，请先调用 register_llm_handler")
-        return await _llm_handler(data.get("payload"))
 
     raise ValueError(f"未知任务类型: {payload_type}")
 
@@ -266,7 +232,7 @@ async def stop_agent_pool(
     drop_pending: bool = False,
 ) -> list[dict[str, Any]]:
     """停止代理池并按需返回未执行任务信息。"""
-    global _worker_tasks, _scheduler, _loop, _llm_handler
+    global _worker_tasks, _scheduler, _loop
     if _scheduler is None:
         return []
 
@@ -288,7 +254,6 @@ async def stop_agent_pool(
     _worker_tasks.clear()
     _scheduler = None
     _loop = None
-    _llm_handler = None
     pending_info = [
         {
             "priority": task.priority,
@@ -354,38 +319,6 @@ async def submit_agent_job(
 
 
 # ----------------------------------------------------------------------
-# 对外调用接口：await agentp_LLM(...) 直接得到回复
-# ----------------------------------------------------------------------
-async def agentp_LLM(
-    api_key: str,
-    prompt: str,
-    api_base: Optional[str] = None,
-    model: str = "gpt-3.5-turbo",
-    priority: int = 7,
-    timeout: float = 30.0,
-    **kwargs
-) -> str:
-    """
-    异步提交 LLM 请求，等待回复。
-    参数会被打包成字典传递给已注册的 LLM 处理器。
-    处理器必须返回字符串（模型回复）。
-    """
-    request_data = {
-        "api_key": api_key,
-        "api_base": api_base,
-        "prompt": prompt,
-        "model": model,
-        **kwargs
-    }
-    result = await _submit_pool_task(
-        payload={"type": "llm", "payload": request_data},
-        priority=priority,
-        timeout=timeout,
-    )
-    return str(result)
-
-
-# ----------------------------------------------------------------------
 # 公开接口
 # ----------------------------------------------------------------------
 __all__ = [
@@ -393,6 +326,4 @@ __all__ = [
     "resize_agent_pool",
     "stop_agent_pool",
     "submit_agent_job",
-    "agentp_LLM",
-    "register_llm_handler",
 ]
