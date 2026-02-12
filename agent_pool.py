@@ -221,7 +221,11 @@ async def submit_agent_job(
     run_in_thread: Optional[bool] = None,
     **kwargs: Any,
 ) -> Any:
-    """提交通用任务到 Agent 池调度执行（不改变任务内部实现方式）。"""
+    """
+    提交通用任务到 Agent 池调度执行（不改变任务内部实现方式）。
+    
+    实质上，就是 add_task 函数
+    """
     run_blocking = not inspect.iscoroutinefunction(func) if run_in_thread is None else bool(run_in_thread)
     payload = {
         "type": "callable",
