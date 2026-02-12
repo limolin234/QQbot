@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+from time import perf_counter
 from typing import Any, TypedDict
 import json
 import os
+import re
 
+from ncatbot.core import GroupMessage
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from agent_pool import submit_agent_job
+from bot import QQnumber, bot
+from .agent_observe import bind_agent_event, generate_run_id
 from .agent_config_loader import load_current_agent_config
 
 try:
@@ -42,6 +49,161 @@ def get_forward_monitor_group_ids() -> set[str]:
     if not isinstance(monitor_group_ids, list):
         return set()
     return {str(group_id).strip() for group_id in monitor_group_ids if str(group_id).strip()}
+
+
+def clean_message(raw_message: str) -> str:
+    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message)
+    at_text = f"[@{','.join(at_matches)}]" if at_matches else ""
+    cq_patterns = {
+        r"\[CQ:image,file=[^]]+\]": "[图片]",
+        r"\[CQ:reply,id=\d+\]": "[回复]",
+        r"\[CQ:file,file=[^]]+\]": "[文件]",
+        r"\[CQ:record,file=[^]]+\]": "[语音]",
+        r"\[CQ:video,file=[^]]+\]": "[视频]",
+    }
+    cleaned = raw_message
+    for pattern, replacement in cq_patterns.items():
+        cleaned = re.sub(pattern, replacement, cleaned)
+    if at_matches:
+        cleaned = re.sub(r"\[CQ:at,qq=\d+\]", at_text, cleaned)
+    return cleaned.strip()
+
+
+def _extract_message_ts(msg: GroupMessage) -> str:
+    ts_candidate = getattr(msg, "time", None)
+    if ts_candidate is not None:
+        try:
+            ts_value = float(ts_candidate)
+            from datetime import datetime, timezone
+
+            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+        except (TypeError, ValueError, OSError):
+            pass
+    from datetime import datetime
+
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _extract_user_name(msg: GroupMessage) -> str:
+    sender = getattr(msg, "sender", None)
+
+    def pick(data, *keys):
+        for key in keys:
+            if isinstance(data, dict):
+                value = data.get(key)
+            else:
+                value = getattr(data, key, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    for source in (msg, sender):
+        if not source:
+            continue
+        name = pick(
+            source,
+            "card",
+            "group_card",
+            "display_name",
+            "nickname",
+            "nick",
+            "user_name",
+            "sender_nickname",
+        )
+        if name:
+            return name
+
+    return str(getattr(msg, "user_id", "unknown_user"))
+
+
+async def enqueue_forward_by_monitor_group(msg: GroupMessage) -> bool:
+    monitor_group_ids = get_forward_monitor_group_ids()
+    group_id = str(getattr(msg, "group_id", ""))
+    if group_id not in monitor_group_ids:
+        return False
+
+    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
+    ts = _extract_message_ts(msg)
+    user_id = str(getattr(msg, "user_id", "unknown"))
+    user_name = _extract_user_name(msg)
+
+    task = asyncio.create_task(
+        _execute_forward(
+            ts=ts,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            cleaned_message=cleaned_message,
+        )
+    )
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception as error:
+            print(f"[FORWARD-ASYNC-ERROR] group={group_id} user={user_id} error={error}")
+
+    task.add_done_callback(_on_done)
+    return True
+
+
+async def _execute_forward(
+    *,
+    ts: str,
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    cleaned_message: str,
+) -> None:
+
+    run_id = generate_run_id()
+    started = perf_counter()
+    log_event = bind_agent_event(
+        agent_name="forward",
+        task_type="FORWARD",
+        run_id=run_id,
+        chat_type="group",
+        group_id=group_id,
+        user_id=user_id,
+        user_name=user_name,
+        ts=ts,
+    )
+    log_event(stage="start", extra={"cleaned_message_chars": len(cleaned_message)})
+
+    try:
+        result = await submit_agent_job(
+            run_forward_graph,
+            ts=ts,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name,
+            cleaned_message=cleaned_message,
+            priority=5,
+            timeout=120.0,
+            run_in_thread=True,
+        )
+        if result.get("should_forward"):
+            await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
+        elapsed_ms = (perf_counter() - started) * 1000
+        log_event(
+            stage="end",
+            latency_ms=elapsed_ms,
+            decision={
+                "should_forward": bool(result.get("should_forward")),
+                "reason": str(result.get("reason", "")),
+                "forward_text_chars": len(str(result.get("forward_text", "") or "")),
+            },
+        )
+        print(
+            "[FORWARD] "
+            f"group={group_id} user={user_id} should_forward={bool(result.get('should_forward'))} "
+            f"reason={result.get('reason', '')}"
+        )
+    except Exception as error:
+        elapsed_ms = (perf_counter() - started) * 1000
+        log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
+        print(f"[FORWARD-ERROR] group={group_id} user={user_id} error={error}")
+    return True
 
 
 def run_forward_graph(
@@ -133,4 +295,3 @@ def run_forward_graph(
         "reason": reason,
         "forward_text": forward_text,
     }
-

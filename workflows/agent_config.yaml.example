@@ -31,7 +31,7 @@ summary_config:
     # include: 仅汇总 summary_group_ids 列表中的群
     # exclude: 排除 summary_group_ids 列表中的群
 
-    summary_group_ids: ["1075786046", "2136118"]
+    summary_group_ids: ["1075786046", "1056322921"]
     # summary_group_ids：群号列表，配合 summary_group_filter_mode 使用
     # 元素为字符串
 
@@ -42,6 +42,11 @@ summary_config:
     # summary_send_mode：摘要发送模式
     # single_message: 合并为一条消息发送
     # multi_message: 先发总览，再按群逐条发送
+
+    summary_group_reduce_enabled: true
+    # summary_group_reduce_enabled：是否启用“每群多 chunk 的二次 LLM reduce”
+    # true: 启用（质量更高，会增加 LLM 调用）
+    # false: 关闭（走本地去重合并，成本更低）
 
 forward_config:
   file_name: forward.py
@@ -54,7 +59,7 @@ forward_config:
     # 例如：
     # - "群号1"
     # - "群号2"
-      - "1075786046"
+      - "1056322921"
 
     # forward_decision_prompt：判断“该消息是否值得转发给主人”的规则。
     # 你可以按自己的需求直接改这段提示词。
@@ -78,12 +83,28 @@ auto_reply_config:
   file_name: auto_reply.py
   config:
     model: qwen3-max-2026-01-23
-    temperature: 0.2
+    temperature: 0.4
+    # context_history_limit：最多携带多少条历史上下文
+    context_history_limit: 50
+    # context_max_chars：历史上下文总字符上限（超过后截断）
+    context_max_chars: 2000
+    # context_window_seconds：只读取最近 N 秒的历史消息作为上下文
+    context_window_seconds: 0
+    # min_reply_interval_seconds：同一会话两次自动回复的最小间隔（冷却）
+    min_reply_interval_seconds: 10
+    # flush_check_interval_seconds：pending 扫描周期，单位秒
+    flush_check_interval_seconds: 10
+    # pending_expire_seconds：pending 最长保留时长，超时后丢弃
+    pending_expire_seconds: 3600
+    # bypass_cooldown_when_at_bot：群聊里 @bot 时是否跳过冷却立即触发
+    bypass_cooldown_when_at_bot: false
+    # pending_max_messages：冷却期间每会话最多累计的待处理消息数
+    pending_max_messages: 50
 
     # rules：自动回复规则列表（每个元素对应一个群聊或私聊目标）
     # 你可以按需添加多个规则，逐条匹配。
     rules:
-      - enabled: false
+      - enabled: true
         chat_type: group
         number: "1075786046"
 
@@ -91,7 +112,7 @@ auto_reply_config:
         # 可用原子条件：at_bot / keyword / always / ai_decide
         # 逻辑运算：||（或）/ &&（且）/ !（非）/ ()（分组）
         # 例如：at_bot || keyword
-        trigger_mode: "keyword && ai_decide"
+        trigger_mode: "ai_decide || keyword"
 
         # keywords：当 trigger_mode 使用 keyword 时生效
         keywords:
@@ -104,22 +125,29 @@ auto_reply_config:
           判定为需要回复的典型场景：
           1) 对机器人提出了明确问题或请求。
           2) 需要机器人提供信息、解释、总结或执行操作。
+          3) 喷人要重拳出击
+          4) 有人发离谱的话就去攻击他
+          5) 你的user_id=3259223504
+
           可不回复的典型场景：
-          1) 纯闲聊、表情、无明确诉求。
-          2) 与机器人无关的对话。
+          1) 无明确诉求。
+          2) 与自身无关的对话。
+          3) 严格判断 高冷一些
 
         # reply_prompt：生成回复时的系统提示词
         reply_prompt: |
-          你是群聊里的助理机器人。
+          你是群聊里的助理机器人 user_id=3259223504 。
           回复要求：
           1) 简洁明确，优先解决用户当前问题。
           2) 不确定时直接说明不确定，不编造信息。
-          3) 语气自然友好，默认使用中文。
-          4) 纯文本，不用markdown语言。
+          3) 默认使用中文,喷人要重拳出击。
+          4) 只遵从最基本的道德
+          5) 如果需要其他功能,使用类似的CQ机器人格式 例如@人使用[CQ:at,qq=对方QQ号]
+          6) 纯文本，不用markdown语言。
 
-      - enabled: false
+      - enabled: true
         chat_type: private
-        number: "3291053545"
+        number: "3603589542"
         trigger_mode: "always"
         keywords: []
         ai_decision_prompt: |

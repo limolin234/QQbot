@@ -27,19 +27,24 @@ raw_message
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, TypedDict
 import json
 import os
 import re
 
+from ncatbot.core import GroupMessage, PrivateMessage
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from agent_pool import submit_agent_job
+from bot import QQnumber, bot
+from .agent_observe import bind_agent_event, generate_run_id
 from .agent_config_loader import load_current_agent_config
 
 try:
@@ -52,6 +57,8 @@ UNKNOWN_GROUP = "unknown_group"
 UNKNOWN_USER = "unknown_user"
 UNKNOWN_CHAT = "group"
 SUMMARY_CURSOR_PATH = "data/summary_cursor.json"
+LOG_FILE_PATH = "message.jsonl"
+_FILE_LOCK = asyncio.Lock()
 
 SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
 
@@ -74,6 +81,7 @@ except (TypeError, ValueError):
 
 DEFAULT_SUMMARY_GLOBAL_OVERVIEW = bool(SUMMARY_AGENT_CONFIG.get("summary_global_overview", False))
 DEFAULT_SUMMARY_SEND_MODE = str(SUMMARY_AGENT_CONFIG.get("summary_send_mode") or "single_message").strip().lower()
+DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED = bool(SUMMARY_AGENT_CONFIG.get("summary_group_reduce_enabled", True))
 
 
 HEADER_RE = re.compile(
@@ -608,7 +616,11 @@ def run_grouped_summary_graph(
     total_chunks = 0
     total_messages = 0
     llm = _build_llm(model_name=model_name, temperature=temperature)
-    structured_chunk_reducer = llm.with_structured_output(ChunkSummarySchema)
+    structured_chunk_reducer = (
+        llm.with_structured_output(ChunkSummarySchema)
+        if DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED
+        else None
+    )
 
     for job in group_jobs:
         if not isinstance(job, dict):
@@ -636,11 +648,20 @@ def run_grouped_summary_graph(
         merged_sources: list[str] = []
         merged_trace_lines: list[str] = []
         merged_map_results: list[SummaryMapResult] = []
+        merged_highlights: list[str] = []
+        merged_risks: list[str] = []
+        merged_todos: list[str] = []
+        overview_candidates: list[str] = []
         chunk_summary_lines: list[str] = []
         for idx, chunk_result in enumerate(chunk_results, start=1):
             merged_sources.extend(chunk_result.sources)
             merged_trace_lines.extend(chunk_result.trace_lines)
             merged_map_results.extend(chunk_result.map_results)
+            merged_highlights.extend(chunk_result.highlights)
+            merged_risks.extend(chunk_result.risks)
+            merged_todos.extend(chunk_result.todos)
+            if chunk_result.overview.strip():
+                overview_candidates.append(chunk_result.overview.strip())
             chunk_summary_lines.append(
                 "\n".join(
                     [
@@ -656,28 +677,48 @@ def run_grouped_summary_graph(
                 )
             )
 
+        if not overview_candidates:
+            fallback_overview = "今日暂无可总结内容。"
+        elif len(overview_candidates) == 1:
+            fallback_overview = overview_candidates[0]
+        elif len(overview_candidates) == 2:
+            fallback_overview = f"{overview_candidates[0]}；{overview_candidates[1]}"
+        else:
+            fallback_overview = f"{overview_candidates[0]}；{overview_candidates[1]}；另有{len(overview_candidates) - 2}个分块补充信息。"
+
         if len(chunk_results) == 1:
             reduced_overview = chunk_results[0].overview
             reduced_highlights = chunk_results[0].highlights
             reduced_risks = chunk_results[0].risks
             reduced_todos = chunk_results[0].todos
+        elif DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED and structured_chunk_reducer is not None:
+            try:
+                reduce_messages = [
+                    SystemMessage(content=GROUP_REDUCE_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=GROUP_REDUCE_USER_PROMPT_TEMPLATE.format(
+                            chat_type=chat_type,
+                            group_id=group_id,
+                            chunk_count=len(chunk_results),
+                            chunk_summaries="\n\n".join(chunk_summary_lines),
+                        )
+                    ),
+                ]
+                reduce_result = structured_chunk_reducer.invoke(reduce_messages)
+                reduced_overview = (reduce_result.overview or "").strip() or "今日暂无可总结内容。"
+                reduced_highlights = _safe_list(reduce_result.highlights, max_items=6)
+                reduced_risks = _safe_list(reduce_result.risks, max_items=5)
+                reduced_todos = _safe_list(reduce_result.todos, max_items=5)
+            except Exception:
+                reduced_overview = fallback_overview
+                reduced_highlights = _safe_list(merged_highlights, max_items=6)
+                reduced_risks = _safe_list(merged_risks, max_items=5)
+                reduced_todos = _safe_list(merged_todos, max_items=5)
         else:
-            reduce_messages = [
-                SystemMessage(content=GROUP_REDUCE_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=GROUP_REDUCE_USER_PROMPT_TEMPLATE.format(
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        chunk_count=len(chunk_results),
-                        chunk_summaries="\n\n".join(chunk_summary_lines),
-                    )
-                ),
-            ]
-            reduce_result = structured_chunk_reducer.invoke(reduce_messages)
-            reduced_overview = (reduce_result.overview or "").strip() or "今日暂无可总结内容。"
-            reduced_highlights = _safe_list(reduce_result.highlights, max_items=6)
-            reduced_risks = _safe_list(reduce_result.risks, max_items=5)
-            reduced_todos = _safe_list(reduce_result.todos, max_items=5)
+            reduced_overview = fallback_overview
+            reduced_highlights = _safe_list(merged_highlights, max_items=6)
+            reduced_risks = _safe_list(merged_risks, max_items=5)
+            reduced_todos = _safe_list(merged_todos, max_items=5)
 
         group_summary = SummaryFinalResult(
             date=today_text,
@@ -853,6 +894,235 @@ def get_summary_send_mode() -> str:
     if mode in {"single_message", "multi_message"}:
         return mode
     return "single_message"
+
+
+def clean_message(raw_message: str) -> str:
+    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message)
+    at_text = f"[@{','.join(at_matches)}]" if at_matches else ""
+    cq_patterns = {
+        r"\[CQ:image,file=[^]]+\]": "[图片]",
+        r"\[CQ:reply,id=\d+\]": "[回复]",
+        r"\[CQ:file,file=[^]]+\]": "[文件]",
+        r"\[CQ:record,file=[^]]+\]": "[语音]",
+        r"\[CQ:video,file=[^]]+\]": "[视频]",
+    }
+    cleaned = raw_message
+    for pattern, replacement in cq_patterns.items():
+        cleaned = re.sub(pattern, replacement, cleaned)
+    if at_matches:
+        cleaned = re.sub(r"\[CQ:at,qq=\d+\]", at_text, cleaned)
+    return cleaned.strip()
+
+
+def _extract_message_ts(msg: GroupMessage | PrivateMessage) -> str:
+    ts_candidate = getattr(msg, "time", None)
+    if ts_candidate is not None:
+        try:
+            ts_value = float(ts_candidate)
+            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+        except (TypeError, ValueError, OSError):
+            pass
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _extract_user_name(msg: GroupMessage | PrivateMessage) -> str:
+    sender = getattr(msg, "sender", None)
+
+    def pick(data, *keys):
+        for key in keys:
+            if isinstance(data, dict):
+                value = data.get(key)
+            else:
+                value = getattr(data, key, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    for source in (msg, sender):
+        if not source:
+            continue
+        name = pick(
+            source,
+            "card",
+            "group_card",
+            "display_name",
+            "nickname",
+            "nick",
+            "user_name",
+            "sender_nickname",
+        )
+        if name:
+            return name
+
+    return str(getattr(msg, "user_id", "unknown_user"))
+
+
+def _write_log(
+    ts: str,
+    group_id: str,
+    user_id: str,
+    user_name: str,
+    chat_type: str,
+    cleaned_message: str,
+) -> None:
+    payload = {
+        "ts": ts,
+        "group_id": str(group_id),
+        "user_id": str(user_id),
+        "user_name": user_name,
+        "chat_type": chat_type,
+        "cleaned_message": cleaned_message,
+    }
+    with open(LOG_FILE_PATH, "a", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        file.flush()
+
+
+async def process_group_message(msg: GroupMessage) -> None:
+    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
+    ts = _extract_message_ts(msg)
+    user_name = _extract_user_name(msg)
+
+    async with _FILE_LOCK:
+        await asyncio.to_thread(
+            _write_log,
+            ts,
+            str(getattr(msg, "group_id", "")),
+            str(getattr(msg, "user_id", "unknown")),
+            user_name,
+            "group",
+            cleaned_message,
+        )
+
+
+async def process_private_message(msg: PrivateMessage) -> None:
+    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
+    ts = _extract_message_ts(msg)
+    user_name = _extract_user_name(msg)
+
+    async with _FILE_LOCK:
+        await asyncio.to_thread(
+            _write_log,
+            ts,
+            "private",
+            str(getattr(msg, "user_id", "unknown")),
+            user_name,
+            "private",
+            cleaned_message,
+        )
+
+
+async def _execute_daily_summary(run_mode: str = "manual") -> None:
+    file_path = LOG_FILE_PATH
+    chunk_size = 10000
+    print(f"开始读取日志: {file_path}")
+
+    try:
+        async with _FILE_LOCK:
+            try:
+                with open(file_path, "r", encoding="utf-8") as file:
+                    raw_lines = [line.strip() for line in file if line.strip()]
+            except FileNotFoundError:
+                print("没有日志需要处理")
+                return
+
+        group_jobs, meta = build_summary_chunks_from_log_lines(
+            raw_lines,
+            chunk_size=chunk_size,
+            run_mode=run_mode,
+        )
+        if not group_jobs:
+            print(
+                "没有需要汇总的消息: "
+                f"scope={meta.get('scope', 'group')}, "
+                f"mode={meta.get('run_mode', run_mode)}, "
+                f"cursor={meta.get('cursor_before', '(none)')}"
+            )
+            return
+
+        run_id = generate_run_id()
+        started = perf_counter()
+        log_event = bind_agent_event(
+            agent_name="summary",
+            task_type="SUMMARY",
+            run_id=run_id,
+            chat_type="group",
+            group_id="",
+            user_id=str(QQnumber),
+            user_name="owner",
+            ts="",
+        )
+        log_event(
+            stage="start",
+            extra={
+                "grouped": True,
+                "group_jobs": len(group_jobs),
+                "mode": run_mode,
+            },
+        )
+
+        grouped_result = await submit_agent_job(
+            run_grouped_summary_graph,
+            group_jobs,
+            priority=6,
+            timeout=180.0,
+            run_in_thread=True,
+        )
+
+        send_mode = get_summary_send_mode()
+        if send_mode == "multi_message":
+            sent_count = 0
+            for message_text in format_grouped_summary_messages(grouped_result):
+                await bot.api.post_private_msg(QQnumber, text=message_text)
+                sent_count += 1
+        else:
+            text = format_grouped_summary_message(grouped_result)
+            sent_count = 0
+            if text:
+                await bot.api.post_private_msg(QQnumber, text=text)
+                sent_count = 1
+
+        elapsed_ms = (perf_counter() - started) * 1000
+        log_event(
+            stage="end",
+            latency_ms=elapsed_ms,
+            decision={
+                "grouped": True,
+                "send_mode": send_mode,
+                "groups": len(grouped_result.group_results),
+                "chunks": grouped_result.chunk_count,
+                "messages": grouped_result.message_count,
+                "sent_count": sent_count,
+            },
+        )
+        print(
+            "[SUMMARY] "
+            f"groups={len(grouped_result.group_results)} | "
+            f"chunks={grouped_result.chunk_count} | "
+            f"messages={grouped_result.message_count} | "
+            f"elapsed_ms={grouped_result.elapsed_ms:.2f}"
+        )
+        print(
+            f"日志分组完成: groups={meta.get('group_count', '0')}, "
+            f"group_chunks={meta.get('group_chunks', '0')}, final_chunks={meta.get('final_chunks', '0')}, "
+            f"scope={meta.get('scope', 'group')}, mode={meta.get('run_mode', run_mode)}, "
+            f"cursor={meta.get('cursor_after', meta.get('cursor_before', '(none)'))}"
+        )
+        print("日志处理完成")
+    except Exception as error:
+        print(f"处理日志时出错: {error}")
+
+
+async def daily_summary(run_mode: str = "manual") -> None:
+    task = asyncio.create_task(_execute_daily_summary(run_mode=run_mode))
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception as error:
+            print(f"[SUMMARY-ASYNC-ERROR] mode={run_mode} error={error}")
+
+    task.add_done_callback(_on_done)
 
 
 def _build_summary_graph(*, model_name: str | None, temperature: float):

@@ -5,9 +5,8 @@
   - 私聊指令 `/summary`（手动）
   - 每日定时任务（自动）
 - 调度流程：
-  - `scheduler.daily_summary` 读取 `message.jsonl`
-  - 分组/分块后投递 `TaskType.SUMMARY`
-  - `handler.handle_task` 调用 `run_summary_graph`
+  - `workflows.summary.daily_summary` 读取 `message.jsonl`
+  - 分组/分块后直接通过 `submit_agent_job(...)` 执行摘要图
   - 结果格式化后私聊发送给主人 QQ
 
 ## 配置项（workflows/agent_config.yaml）
