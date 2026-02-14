@@ -1,17 +1,18 @@
 # 核心框架
-ncatbot>=0.1.0                # QQ 机器人框架
+ncatbot                # QQ 机器人框架
 
 # AI 与工作流
-langchain>=0.1.0              # LLM 调用基础
-langchain-openai>=0.1.0      # OpenAI 风格 API 适配
-langgraph>=0.0.20            # 状态机工作流
-pydantic>=2.0.0              # 结构化输出
+langchain              # LLM 调用基础
+langchain-openai      # OpenAI 风格 API 适配
+langgraph            # 状态机工作流
+pydantic              # 结构化输出
 
 # 配置与工具
-python-dotenv>=1.0.0         # 环境变量加载
-pyyaml>=6.0                  # YAML 配置解析
-aiocron>=1.8                 # 定时任务
+python-dotenv         # 环境变量加载
+pyyaml                # YAML 配置解析
+aiocron                 # 定时任务
 
 # 可选依赖（如需使用其他 LLM 后端）
 # langchain-anthropic
+
 # langchain-google-vertexai
