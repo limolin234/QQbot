@@ -711,6 +711,7 @@ class AutoReplyDecisionEngine:
                     "matched_rule": idx,
                     "trigger_mode": expression,
                     "reply_prompt": str(rule.get("reply_prompt") or "").strip(),
+                    "rule": rule
                 }
                 context_event(stage="decision_end", decision=result)
                 return result
@@ -801,6 +802,8 @@ class AutoReplyDecisionEngine:
         if not prompt:
             return False, "缺少 ai_decision_prompt"
 
+        model_name = str(rule.get("decision_model") or rule.get("model") or self.model)
+
         if load_dotenv is not None:
             load_dotenv(override=False)
         api_key = os.getenv("LLM_API_KEY")
@@ -808,7 +811,7 @@ class AutoReplyDecisionEngine:
             return False, "缺少 LLM_API_KEY"
 
         llm_kwargs: dict[str, Any] = {
-            "model_name": self.model,
+            "model_name": model_name,
             "temperature": self.temperature,
             "openai_api_key": api_key,
         }
@@ -890,10 +893,13 @@ class AutoReplyDecisionEngine:
         *,
         reply_prompt: str,
         context: AutoReplyMessageContext,
+        rule: dict[str, Any] | None = None,
     ) -> str:
         prompt = str(reply_prompt).strip()
         if not prompt:
             return ""
+
+        model_name = str(rule.get("reply_model") or rule.get("model") or self.model) if rule else self.model
 
         if load_dotenv is not None:
             load_dotenv(override=False)
@@ -902,7 +908,7 @@ class AutoReplyDecisionEngine:
             raise ValueError("缺少 LLM_API_KEY")
 
         llm_kwargs: dict[str, Any] = {
-            "model_name": self.model,
+            "model_name": model_name,
             "temperature": self.temperature,
             "openai_api_key": api_key,
         }
@@ -1043,8 +1049,9 @@ def run_auto_reply_pipeline(
     if bool(result.get("should_reply", False)):
         reply_prompt = str(result.get("reply_prompt", "")).strip()
         if reply_prompt:
+            rule = result.get("rule")
             try:
-                reply_text = engine.generate_reply_text(reply_prompt=reply_prompt, context=context)
+                reply_text = engine.generate_reply_text(reply_prompt=reply_prompt, context=context, rule=rule)
             except Exception as error:
                 context_event(stage="reply_generate_error", error=str(error))
     return {
