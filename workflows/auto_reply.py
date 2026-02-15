@@ -882,9 +882,18 @@ class AutoReplyDecisionEngine:
         if not api_key:
             return False, "缺少 LLM_API_KEY"
 
+        rule_temp = rule.get("temperature")
+        if rule_temp is not None:
+            try:
+                temperature = float(rule_temp)
+            except (TypeError, ValueError):
+                temperature = self.temperature
+        else:
+            temperature = self.temperature
+        
         llm_kwargs: dict[str, Any] = {
             "model_name": model_name,
-            "temperature": self.temperature,
+            "temperature": temperature,
             "openai_api_key": api_key,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
@@ -979,9 +988,19 @@ class AutoReplyDecisionEngine:
         if not api_key:
             raise ValueError("缺少 LLM_API_KEY")
 
+        temperature = self.temperature
+        
+        if rule is not None:
+            rule_temp = rule.get("temperature")
+            if rule_temp is not None:
+                try:
+                    temperature = float(rule_temp)
+                except (TypeError, ValueError):
+                    pass  # 转换失败则保持全局值
+
         llm_kwargs: dict[str, Any] = {
             "model_name": model_name,
-            "temperature": self.temperature,
+            "temperature": temperature,
             "openai_api_key": api_key,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
