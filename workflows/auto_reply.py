@@ -102,6 +102,78 @@ def get_auto_reply_monitor_numbers(chat_type: str = "group") -> set[str]:
     return monitor_numbers
 
 
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = str(item.get("text", "")).strip()
+                if text:
+                    parts.append(text)
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _strip_markdown_code_fence(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw.startswith("```"):
+        return raw
+    fenced_match = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", raw, flags=re.IGNORECASE)
+    if fenced_match:
+        return str(fenced_match.group(1) or "").strip()
+    lines = raw.splitlines()
+    if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return raw
+
+
+def _extract_reply_text_from_raw_output(raw_output: Any) -> str:
+    raw_text = ""
+    if hasattr(raw_output, "content"):
+        raw_text = _content_to_text(getattr(raw_output, "content"))
+    elif isinstance(raw_output, dict):
+        reply_text = str(raw_output.get("reply_text", "")).strip()
+        if reply_text:
+            return reply_text
+        raw_text = _content_to_text(raw_output.get("content", ""))
+    else:
+        raw_text = str(raw_output or "").strip()
+
+    cleaned = _strip_markdown_code_fence(raw_text)
+    if not cleaned:
+        return ""
+
+    candidates = [cleaned]
+    json_obj_match = re.search(r"\{[\s\S]*\}", cleaned)
+    if json_obj_match:
+        obj_text = str(json_obj_match.group(0) or "").strip()
+        if obj_text and obj_text != cleaned:
+            candidates.insert(0, obj_text)
+
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            reply_text = str(obj.get("reply_text", "")).strip()
+            if reply_text:
+                return reply_text
+
+    if cleaned.startswith("{") or cleaned.startswith("["):
+        return ""
+    return cleaned
+
+
+def _default_reply_when_parse_failed() -> str:
+    return "抱歉，刚才回复格式异常，请再说一次，我马上继续。"
+
+
 class AutoReplyDispatcher:
     """AutoReply 接入层：监控命中 + 冷却窗口 + pending 聚合/过期。"""
 
@@ -916,7 +988,13 @@ class AutoReplyDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm = ChatOpenAI(**llm_kwargs).with_structured_output(AutoReplyGeneratedReply)
+        llm_base = ChatOpenAI(**llm_kwargs)
+        use_raw_fallback = True
+        try:
+            llm = llm_base.with_structured_output(AutoReplyGeneratedReply, include_raw=True)
+        except TypeError:
+            use_raw_fallback = False
+            llm = llm_base.with_structured_output(AutoReplyGeneratedReply)
 
         def generate_node(state: AutoReplyGenerateState) -> AutoReplyGenerateState:
             llm_input = {
@@ -929,15 +1007,58 @@ class AutoReplyDecisionEngine:
                 "cleaned_message": state["cleaned_message"],
                 "history_messages": state["history_messages"],
             }
-            result = llm.invoke(
-                [
-                    SystemMessage(content=state["prompt"]),
-                    HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
-                ]
-            )
+            messages = [
+                SystemMessage(content=state["prompt"]),
+                HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
+            ]
+            try:
+                result = llm.invoke(messages)
+            except Exception:
+                # 某些兼容模型不会遵守结构化输出，改走原始文本兜底，避免 reply_len=0
+                fallback_reply = ""
+                try:
+                    raw_result = llm_base.invoke(messages)
+                    fallback_reply = _extract_reply_text_from_raw_output(raw_result)
+                except Exception:
+                    fallback_reply = ""
+                return {
+                    **state,
+                    "reply_text": fallback_reply or _default_reply_when_parse_failed(),
+                }
+            if use_raw_fallback and isinstance(result, dict):
+                parsed = result.get("parsed")
+                if parsed is not None:
+                    return {
+                        **state,
+                        "reply_text": str(getattr(parsed, "reply_text", "") or "").strip(),
+                    }
+                raw_output = result.get("raw")
+                fallback_reply = _extract_reply_text_from_raw_output(raw_output)
+                if fallback_reply:
+                    return {
+                        **state,
+                        "reply_text": fallback_reply,
+                    }
+                parse_error = result.get("parsing_error")
+                if parse_error:
+                    return {
+                        **state,
+                        "reply_text": _default_reply_when_parse_failed(),
+                    }
+                return {
+                    **state,
+                    "reply_text": _default_reply_when_parse_failed(),
+                }
+            structured_reply = str(getattr(result, "reply_text", "") or "").strip()
+            if structured_reply:
+                return {
+                    **state,
+                    "reply_text": structured_reply,
+                }
+            fallback_reply = _extract_reply_text_from_raw_output(result)
             return {
                 **state,
-                "reply_text": str(result.reply_text or "").strip(),
+                "reply_text": fallback_reply or _default_reply_when_parse_failed(),
             }
 
         graph = StateGraph(AutoReplyGenerateState)
@@ -958,7 +1079,7 @@ class AutoReplyDecisionEngine:
 
         context_event(
             stage="reply_generate_start",
-            extra={"model": self.model, "history_count": len(context.history_messages)},
+            extra={"model": model_name, "history_count": len(context.history_messages)},
         )
 
         final_state = app.invoke(
