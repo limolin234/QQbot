@@ -9,6 +9,7 @@
 - [Summary 工作流与配置项](docs/summary.md)
 - [Forward 工作流与配置项](docs/forward.md)
 - [AutoReply 工作流与配置项](docs/auto_reply.md)
+- [Makefile 使用指南（Docker 打包与部署）](docs/makefile.md)
 
 ## 项目架构
 

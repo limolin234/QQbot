@@ -1,5 +1,7 @@
+# 服务器从仓库部署时：在服务器上设置 IMAGE_NAME=你的仓库/qqbot:latest，然后 make deploy
 services:
   qqbot:
+    image: ${IMAGE_NAME:-qqbot:latest}
     build:
       context: .
       dockerfile: Dockerfile
