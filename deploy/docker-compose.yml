@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  qqbot:
+    image: ${IMAGE_NAME:-qqbot:latest}
+    container_name: qqbot
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      TZ: Asia/Shanghai
+      NAPCAT_HOST: 127.0.0.1
+      NAPCAT_PORT: 3001
+    command: ["python", "main.py"]
+    volumes:
+      - ./bot.py:/app/bot.py:ro
+      - ./config.yaml:/app/config.yaml
+      - ./.env:/app/.env
+      - ./workflows/agent_config.yaml:/app/workflows/agent_config.yaml:ro
+      - ./message.jsonl:/app/message.jsonl
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./plugins:/app/plugins
+    network_mode: host
