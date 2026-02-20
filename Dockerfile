@@ -1,28 +1,25 @@
 # ==========================================
-# 第一阶段：构建环境 (必须起名为 builder)
+# 第一阶段：构建
 # ==========================================
 FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# 安装构建依赖（如果某些 Python 包需要编译）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# 安装依赖到指定目录
+# 安装依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# 拷贝源代码
+# 拷贝代码
 COPY . .
 
+# 【关键】在镜像内部预先创建好需要写入的文件和文件夹
+RUN mkdir -p /app/logs && touch /app/message.jsonl
+
 # ==========================================
-# 第二阶段：运行环境 (Distroless 极致安全镜像)
+# 第二阶段：运行 (Distroless)
 # ==========================================
 FROM gcr.io/distroless/python3-debian12:latest
 
-# 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai \
@@ -30,16 +27,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# 1. 拷贝库文件
+# 拷贝库
 COPY --from=builder /install /usr/local
 
-# 2. 【核心修复】拷贝代码并更改所有者
-# Distroless 默认 nonroot 用户 ID 是 65532
-# 必须在 COPY 时通过 --chown 授权，否则 nonroot 用户无法在 /app 下创建 ./logs
+# 【核心修复】使用 --chown 将整个 /app 目录授权给 nonroot 用户 (65532)
+# 这样程序在运行时可以自由读写 /app/logs 和 /app/message.jsonl
 COPY --from=builder --chown=65532:65532 /app /app
 
-# 3. 切换到安全用户
 USER 65532
 
-# 4. 启动程序
 ENTRYPOINT ["python3", "main.py"]
