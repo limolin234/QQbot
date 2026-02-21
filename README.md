@@ -9,8 +9,12 @@
 直接运行：clone下来 配置好 .env config.yaml ./workflows/agent_config.yaml 直接跑 ncatbot库会自动安装 配置napcat
 
 docker-compose容器化安装：
-  curl -fsSL https://github.com/limolin234/QQbot/releases/download/v1.0.0.0/qqbot_download.sh | bash
-  自动将文件夹部署到当前路径 剩余操作参考 其中的readme.md文件
+  linux:
+    curl -fsSL https://github.com/limolin234/QQbot/releases/download/v1.0.0.0/qqbot_download.sh | bash
+    自动将文件夹部署到当前路径 剩余操作参考 其中的readme.md文件
+  windows:
+    手动去release里下载压缩包解压，配置文件要自己填所以脚本也就是自动下载解压
+  
   注：napcat官方有docker脚本 需自行安装
 
 ## Agent 工作流与配置文档
@@ -259,6 +263,7 @@ python main.py
 
 - [ncatbot](https://github.com/liyihao1110/ncatbot) - 简洁高效的 QQ 机器人 Python 框架
 - [Napcat](https://napneko.github.io/) - 强大的 QQ 协议实现与消息收发服务
+
 
 
 
