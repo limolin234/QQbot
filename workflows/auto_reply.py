@@ -1026,7 +1026,13 @@ class AutoReplyDecisionEngine:
                 # we will include all available tasks from the context file.
                 # In a single-user/couple bot scenario, this is usually fine.
                 
+                # Only include tasks for the current user to avoid context pollution and privacy issues
+                target_uids = {str(context.user_id)}
+                # If we want to support "master" tasks management by others, we could add logic here.
+                
                 for uid, tasks in dida_data.items():
+                    if str(uid) not in target_uids:
+                        continue
                     if not isinstance(tasks, list) or not tasks:
                         continue
                     for t in tasks:

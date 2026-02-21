@@ -215,6 +215,25 @@ class DidaScheduler:
                     
         return None, None
 
+    def _find_project_id_from_context(self, user_id: str, task_id: str) -> str | None:
+        try:
+            path = os.path.join("data", "dida_context.json")
+            if not os.path.exists(path):
+                return None
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            user_tasks = data.get(user_id, [])
+            if not isinstance(user_tasks, list):
+                return None
+            
+            for t in user_tasks:
+                if str(t.get("id")) == task_id:
+                    return t.get("projectId")
+        except Exception:
+            pass
+        return None
+
     async def execute_action(
         self,
         *,
@@ -236,13 +255,23 @@ class DidaScheduler:
         if not access_token:
             return "⚠️ Dida 授权信息无效，请重新绑定 /dida_auth。"
         project_id = str(getattr(action, "project_id", "") or "").strip()
-        if not project_id:
-            project_id = await self._ensure_default_project_id(user_key, token_data, service)
-            if project_id:
-                self.save_tokens(tokens)
+        
+        # Try to find project_id from context if missing and we have a task_id
+        task_id_for_lookup = str(getattr(action, "task_id", "") or "").strip()
+        if not project_id and task_id_for_lookup:
+            found_pid = self._find_project_id_from_context(user_key, task_id_for_lookup)
+            if found_pid:
+                project_id = found_pid
+        
         action_type = str(getattr(action, "action_type", "") or "").strip()
         self._log(f"action_start type={action_type or 'unknown'} user={user_key} project={project_id or 'default'}")
+        
         if action_type == "create":
+            if not project_id:
+                project_id = await self._ensure_default_project_id(user_key, token_data, service)
+                if project_id:
+                    self.save_tokens(tokens)
+            
             title = str(getattr(action, "title", "") or "").strip()
             if not title:
                 return "⚠️ 创建任务需要 title。"
@@ -503,6 +532,8 @@ class DidaScheduler:
                 tasks = data.get("tasks", []) if isinstance(data, dict) else []
                 project_info = data.get("project", {}) if isinstance(data, dict) else {}
                 project_name = project_info.get("name", "unknown")
+                if project_id == "inbox" and project_name == "unknown":
+                    project_name = "Inbox"
                 self._log(f"poll_project user={user_id} project={project_name}({project_id}) tasks={len(tasks)}")
                 
                 # Collect active tasks for AI context
@@ -512,6 +543,7 @@ class DidaScheduler:
                              "id": task.get("id"),
                              "title": task.get("title"),
                              "project": project_name,
+                             "projectId": project_id,
                              "due": task.get("dueDate")
                          })
 
