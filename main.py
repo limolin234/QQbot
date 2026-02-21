@@ -10,9 +10,7 @@ from workflows.summary import daily_summary, process_group_message, process_priv
 async def on_private_message(msg: PrivateMessage):
     await enqueue_auto_reply_if_monitored(msg, chat_type="private")
     await process_private_message(msg)
-    if msg.raw_message == "测试":
-        await bot.api.post_private_msg(msg.user_id, text="NcatBot测试成功")
-    elif msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
+    if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
         await bot.api.post_private_msg(msg.user_id, text="收到 /summary，正在执行一次手动总结…")
         await daily_summary(run_mode="manual")
         await bot.api.post_private_msg(msg.user_id, text="手动总结任务已投递到队列，请稍等结果私聊消息。")

@@ -1,5 +1,0 @@
-from ncatbot.core import BotClient
-
-bot = BotClient()
-
-QQnumber = 'root_qqid'
