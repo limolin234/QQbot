@@ -765,7 +765,7 @@ async def run_task_fuzzy_match(
         return None
         
     # Simplify task list for prompt to save tokens
-    tasks_str = "\n".join([f"- [ID: {t['id']}] {t['title']} (Due: {t.get('due_date','None')})" for t in tasks])
+    tasks_str = "\n".join([f"- [{t.get('project_name', 'Unknown')}] {t['title']} (ID: {t['id']}, Due: {t.get('due_date','None')})" for t in tasks])
     
     prompt = f"""
     You are a task matching assistant.

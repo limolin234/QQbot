@@ -1,4 +1,5 @@
 import asyncio,aiocron
+from datetime import datetime, timedelta
 from ncatbot.core import PrivateMessage, GroupMessage
 from agent_pool import setup_agent_pool
 from bot import bot, QQnumber
@@ -13,9 +14,24 @@ async def on_private_message(msg: PrivateMessage):
         return
     await enqueue_auto_reply_if_monitored(msg, chat_type="private")
     await process_private_message(msg)
-    if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
-        await bot.api.post_private_msg(msg.user_id, text="收到 /summary，正在执行一次手动总结…")
-        await daily_summary(run_mode="manual")
+    if msg.user_id == QQnumber and msg.raw_message.strip().startswith("/summary"):
+        parts = msg.raw_message.strip().split(maxsplit=1)
+        target_date = None
+        if len(parts) > 1:
+            arg = parts[1].strip()
+            if arg in ["yesterday", "昨天"]:
+                target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                try:
+                    datetime.strptime(arg, "%Y-%m-%d")
+                    target_date = arg
+                except ValueError:
+                    await bot.api.post_private_msg(msg.user_id, text=f"日期格式错误：{arg}，请使用 YYYY-MM-DD 或 '昨天'")
+                    return
+
+        status_text = f"收到 /summary，正在执行一次手动总结{f' (日期: {target_date})' if target_date else ''}…"
+        await bot.api.post_private_msg(msg.user_id, text=status_text)
+        await daily_summary(run_mode="manual", target_date=target_date)
         await bot.api.post_private_msg(msg.user_id, text="手动总结任务已投递到队列，请稍等结果私聊消息。")
 
 @bot.group_event()# type: ignore

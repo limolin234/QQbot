@@ -262,6 +262,11 @@ class DidaScheduler:
                 if not isinstance(project_tasks, list):
                     continue
                 
+                project_info = res.get("project", {})
+                p_name = str(project_info.get("name", "") or "").strip()
+                if not p_name:
+                    p_name = "收集箱" if pid == "inbox" else "未命名项目"
+
                 for task in project_tasks:
                     # Filter only active (uncompleted) tasks if needed, usually status==0
                     if str(task.get("status", "0")) != "0":
@@ -276,6 +281,7 @@ class DidaScheduler:
                             "id": tid,
                             "title": ttitle,
                             "project_id": pid,
+                            "project_name": p_name,
                             "due_date": due
                         })
             return all_tasks
@@ -622,6 +628,7 @@ class DidaScheduler:
 
     def _save_task_context(self, user_id: str, tasks: list[dict[str, Any]]) -> None:
         try:
+            os.makedirs("data", exist_ok=True)
             path = os.path.join("data", "dida_context.json")
             # Simple implementation: Overwrite with latest user data (assuming single user mainly or merging)
             # For multi-user, we might want a dict keyed by user_id
