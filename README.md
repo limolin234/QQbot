@@ -4,6 +4,12 @@
 
 这是一个基于 Python 的聊天机器人系统，采用模块化 Agent 架构，利用 LangGraph 构建工作流，支持自动回复、消息转发、每日摘要等多种智能任务。系统基于 Napcat 框架与 QQ 进行交互，所有消息经过清洗、结构化记录，并通过优先级任务池进行高效调度。
 
+## 快速开始
+
+curl -fsSL https://github.com/limolin234/QQbot/releases/download/v1.0.0.0/qqbot_download.sh | bash
+
+自动将文件夹部署到当前路径 剩余操作参考 其中的readme.md文件
+
 ## Agent 工作流与配置文档
 
 - [Summary 工作流与配置项](docs/summary.md)

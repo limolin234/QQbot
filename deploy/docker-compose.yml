@@ -24,7 +24,8 @@ services:
     # 4. 卷挂载优化（关键修改点）
     volumes:
       # 配置文件和数据建议挂载
-      - ./config.yaml:/app/config.yaml:ro
+      - ./config.yaml:/app/config.yaml
+      - ./.env:/app/.env
       - ./workflows/agent_config.yaml:/app/workflows/agent_config.yaml:ro
       - ./message.jsonl:/app/message.jsonl
       - ./logs:/app/logs

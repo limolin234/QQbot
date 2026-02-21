@@ -8,14 +8,14 @@ skip_ncatbot_install_check: false
 websocket_timeout: 15
 napcat:
   ws_uri: ws://localhost:3001
-  ws_token: your_ws_token
+  ws_token: YOUR_TOKEN
   ws_listen_ip: localhost
-  webui_uri: http://localhost:6099
-  webui_token: your_webui_token
-  enable_webui: true
+  webui_uri: http://localhost:0
+  webui_token: NcatBot
+  enable_webui: false
   check_napcat_update: false
   stop_napcat: false
-  remote_mode: false
+  remote_mode: true
   report_self_message: false
   report_forward_message_detail: true
 plugin:
