@@ -1,4 +1,4 @@
-"""AutoReply 工作流：当前只实现“是否需要回复”的判定。"""
+"""DidaAgent 工作流：当前只实现“是否需要回复”的判定。"""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
     load_dotenv = None
 
 
-AUTO_REPLY_CONFIG = load_current_agent_config(__file__)
+DIDA_AGENT_CONFIG = load_current_agent_config(__file__)
 
 
 def get_dida_agent_runtime_config() -> dict[str, Any]:
@@ -38,13 +38,13 @@ def get_dida_agent_runtime_config() -> dict[str, Any]:
 
     def int_config(name: str, default: int) -> int:
         try:
-            value = int(AUTO_REPLY_CONFIG.get(name, default))
+            value = int(DIDA_AGENT_CONFIG.get(name, default))
         except (TypeError, ValueError):
             value = default
         return max(value, 0)
 
     def bool_config(name: str, default: bool) -> bool:
-        value = AUTO_REPLY_CONFIG.get(name, default)
+        value = DIDA_AGENT_CONFIG.get(name, default)
         if isinstance(value, bool):
             return value
         text = str(value).strip().lower()
@@ -63,7 +63,7 @@ def get_dida_agent_runtime_config() -> dict[str, Any]:
         "pending_expire_seconds": int_config("pending_expire_seconds", 3600),
         "pending_max_messages": int_config("pending_max_messages", 50),
         "bypass_cooldown_when_at_bot": bool_config("bypass_cooldown_when_at_bot", True),
-        "bot_qq": str(AUTO_REPLY_CONFIG.get("bot_qq", "")).strip(),
+        "bot_qq": str(DIDA_AGENT_CONFIG.get("bot_qq", "")).strip(),
     }
 
 
@@ -87,7 +87,7 @@ def _parse_timestamp_to_epoch_seconds(ts_text: str) -> float | None:
 
 def get_dida_agent_monitor_numbers(chat_type: str = "group") -> set[str]:
     """读取 dida_agent 配置里启用规则的监控号码集合。"""
-    rules = AUTO_REPLY_CONFIG.get("rules", [])
+    rules = DIDA_AGENT_CONFIG.get("rules", [])
     if not isinstance(rules, list):
         return set()
     target_chat_type = str(chat_type).strip().lower()
@@ -267,10 +267,10 @@ class DidaAgentDispatcher:
             agent_name="dida_agent",
             task_type="DIDA_AGENT",
             chat_type=target_chat_type,
-            group_id=auto_reply_payload["group_id"],
-            user_id=auto_reply_payload["user_id"],
-            user_name=auto_reply_payload["user_name"],
-            ts=auto_reply_payload["ts"],
+            group_id=dida_agent_payload["group_id"],
+            user_id=dida_agent_payload["user_id"],
+            user_name=dida_agent_payload["user_name"],
+            ts=dida_agent_payload["ts"],
         )
 
         bypass_cooldown = (
@@ -835,7 +835,7 @@ class DidaAgentDecisionEngine:
         self,
         expression: str,
         rule: dict[str, Any],
-        context: AutoReplyMessageContext,
+        context: DidaAgentMessageContext,
     ) -> tuple[bool, str]:
         allowed_conditions = {
             "at_bot": lambda: self.condition_at_bot(context),
@@ -875,7 +875,7 @@ class DidaAgentDecisionEngine:
     def condition_always(self) -> tuple[bool, str]:
         return True, "always=true"
 
-    def condition_at_bot(self, context: AutoReplyMessageContext) -> tuple[bool, str]:
+    def condition_at_bot(self, context: DidaAgentMessageContext) -> tuple[bool, str]:
         if context.chat_type != "group":
             return False, "私聊场景不满足 at_bot"
 
@@ -891,7 +891,7 @@ class DidaAgentDecisionEngine:
 
         return True, "检测到 @，且未配置 bot_qq，按命中处理"
 
-    def condition_keyword(self, rule: dict[str, Any], context: AutoReplyMessageContext) -> tuple[bool, str]:
+    def condition_keyword(self, rule: dict[str, Any], context: DidaAgentMessageContext) -> tuple[bool, str]:
         keywords = rule.get("keywords", [])
         if not isinstance(keywords, list) or not keywords:
             return False, "keywords 为空"
@@ -959,14 +959,14 @@ class DidaAgentDecisionEngine:
                 "reason": str(result.reason or "").strip(),
             }
 
-        graph = StateGraph(AutoReplyAIState)
+        graph = StateGraph(DidaAgentAIState)
         graph.add_node("decide", decide_node)
         graph.add_edge(START, "decide")
         graph.add_edge("decide", END)
         app = graph.compile()
         context_event = bind_agent_event(
             agent_name="dida_agent",
-            task_type="AUTO_REPLY",
+            task_type="DIDA_AGENT",
             run_id=context.run_id,
             chat_type=context.chat_type,
             group_id=context.group_id,
@@ -1007,7 +1007,7 @@ class DidaAgentDecisionEngine:
         self,
         *,
         reply_prompt: str,
-        context: AutoReplyMessageContext,
+        context: DidaAgentMessageContext,
         rule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         prompt = str(reply_prompt).strip()
@@ -1081,12 +1081,12 @@ class DidaAgentDecisionEngine:
         llm_base = ChatOpenAI(**llm_kwargs)
         use_raw_fallback = True
         try:
-            llm = llm_base.with_structured_output(AutoReplyGeneratedReply, include_raw=True)
+            llm = llm_base.with_structured_output(DidaAgentGeneratedReply, include_raw=True)
         except TypeError:
             use_raw_fallback = False
-            llm = llm_base.with_structured_output(AutoReplyGeneratedReply)
+            llm = llm_base.with_structured_output(DidaAgentGeneratedReply)
 
-        def generate_node(state: AutoReplyGenerateState) -> AutoReplyGenerateState:
+        def generate_node(state: DidaAgentGenerateState) -> DidaAgentGenerateState:
             llm_input = {
                 "chat_type": state["chat_type"],
                 "group_id": state["group_id"],
@@ -1229,7 +1229,7 @@ def run_dida_agent_pipeline(
         window_seconds=max(context_window_seconds, 0),
     )
 
-    context = AutoReplyMessageContext(
+    context = DidaAgentMessageContext(
         chat_type=str(chat_type).strip().lower(),
         group_id=str(group_id),
         user_id=str(user_id),
@@ -1241,8 +1241,8 @@ def run_dida_agent_pipeline(
         run_id=str(run_id),
     )
     context_event = bind_agent_event(
-        agent_name="auto_reply",
-        task_type="AUTO_REPLY",
+        agent_name="dida_agent",
+        task_type="DIDA_AGENT",
         run_id=context.run_id,
         chat_type=context.chat_type,
         group_id=context.group_id,
@@ -1261,7 +1261,7 @@ def run_dida_agent_pipeline(
     )
 
     # 先判断是否要回复
-    engine = DidaAgentDecisionEngine(AUTO_REPLY_CONFIG)
+    engine = DidaAgentDecisionEngine(DIDA_AGENT_CONFIG)
     result = engine.should_reply(context)
 
     # 然后生成具体的回复内容文本
