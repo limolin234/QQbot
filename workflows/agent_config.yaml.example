@@ -226,7 +226,7 @@ dida_scheduler_config:
     redirect_uri: "" # 需与申请时填写的 Redirect URL 一致，如无个人网址，可用http://www.baidu.com
     
     # 轮询间隔（秒）
-    poll_interval_seconds: 60
+    poll_interval_seconds: 600
     # 提前提醒窗口（秒），在此窗口内的任务会触发提醒
     due_window_seconds: 60
     # 每次扫描最大任务数
