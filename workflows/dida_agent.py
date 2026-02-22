@@ -54,6 +54,14 @@ def get_dida_agent_runtime_config() -> dict[str, Any]:
             return False
         return bool(default)
 
+    admin_qqs_raw = DIDA_AGENT_CONFIG.get("admin_qqs", [])
+    if isinstance(admin_qqs_raw, str):
+        admin_qqs = [x.strip() for x in admin_qqs_raw.split(",") if x.strip()]
+    elif isinstance(admin_qqs_raw, list):
+        admin_qqs = [str(x).strip() for x in admin_qqs_raw if str(x).strip()]
+    else:
+        admin_qqs = []
+
     return {
         "context_history_limit": int_config("context_history_limit", 12),
         "context_max_chars": int_config("context_max_chars", 1800),
@@ -64,6 +72,7 @@ def get_dida_agent_runtime_config() -> dict[str, Any]:
         "pending_max_messages": int_config("pending_max_messages", 50),
         "bypass_cooldown_when_at_bot": bool_config("bypass_cooldown_when_at_bot", True),
         "bot_qq": str(DIDA_AGENT_CONFIG.get("bot_qq", "")).strip(),
+        "admin_qqs": admin_qqs,
     }
 
 
@@ -724,6 +733,7 @@ class DidaAction(BaseModel):
     repeat_flag: Optional[str] = Field(default=None, description="重复规则")
     reminders: Optional[list[str]] = Field(default=None, description="提醒数组")
     limit: Optional[int] = Field(default=None, description="列表数量")
+    target_user_id: Optional[str] = Field(default=None, description="目标用户QQ号，仅限管理员操作他人任务时使用")
 
 
 class DidaAgentGeneratedReply(BaseModel):
@@ -1035,8 +1045,18 @@ class DidaAgentDecisionEngine:
                 
                 # Only include tasks for the current user to avoid context pollution and privacy issues
                 target_uids = {str(context.user_id)}
-                # If we want to support "master" tasks management by others, we could add logic here.
                 
+                # Admin permission check
+                runtime_config = get_dida_agent_runtime_config()
+                admin_qqs = runtime_config.get("admin_qqs", [])
+                is_admin = str(context.user_id) in admin_qqs
+                
+                if is_admin:
+                    # If admin, allow seeing tasks of mentioned users
+                    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", context.raw_message or "")
+                    for uid in at_matches:
+                        target_uids.add(str(uid))
+
                 for uid, tasks in dida_data.items():
                     if str(uid) not in target_uids:
                         continue
@@ -1046,12 +1066,28 @@ class DidaAgentDecisionEngine:
                         tid = str(t.get("id") or "")
                         ttitle = str(t.get("title") or "")
                         tproject = str(t.get("project") or "")
-                        tdue = str(t.get("due") or "无到期")
+                        tdue_raw = str(t.get("due") or "")
+                        tdue = "无到期"
+                        if tdue_raw:
+                            try:
+                                # Clean up potential "Z" for isoformat
+                                _dt = datetime.fromisoformat(tdue_raw.replace("Z", "+00:00"))
+                                # Convert to local
+                                dt_local = _dt.astimezone()
+                                if bool(t.get("isAllDay")):
+                                    tdue = dt_local.strftime("%Y-%m-%d") + " (全天)"
+                                else:
+                                    tdue = dt_local.strftime("%Y-%m-%d %H:%M")
+                            except ValueError:
+                                tdue = tdue_raw
                         # Format: [Project] Title (ID: ...) Due: ...
                         task_context_lines.append(f"- [{tproject}] {ttitle} (ID: {tid}) Due: {tdue}")
                 
                 if task_context_lines:
                     prompt += "\n\n【当前 Dida 任务列表（仅供 AI 参考，不要泄露 ID 给用户，但在调用工具时必须使用 ID）】:\n" + "\n".join(task_context_lines)
+                
+                if is_admin:
+                    prompt += "\n\n【权限提醒】你是管理员，可以操作他人的任务。若指令涉及他人（如“查看@A的任务”），请在 DidaAction 中准确填写 target_user_id（即被 @ 的用户 QQ 号）。"
         except Exception as e:
             pass # Ignore context loading errors
 

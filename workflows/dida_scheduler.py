@@ -103,11 +103,21 @@ class DidaScheduler:
         project_ids = config.get("project_ids")
         if not isinstance(project_ids, list):
             project_ids = []
+            
+        admin_qqs_raw = config.get("admin_qqs", [])
+        if isinstance(admin_qqs_raw, str):
+            admin_qqs = [x.strip() for x in admin_qqs_raw.split(",") if x.strip()]
+        elif isinstance(admin_qqs_raw, list):
+            admin_qqs = [str(x).strip() for x in admin_qqs_raw if str(x).strip()]
+        else:
+            admin_qqs = []
+            
         return {
             "poll_interval_seconds": max(poll_interval_seconds, 5),
             "due_window_seconds": max(due_window_seconds, 30),
             "max_tasks_scan_per_user": max(max_tasks_scan, 50),
             "project_ids": [str(item).strip() for item in project_ids if str(item).strip()],
+            "admin_qqs": admin_qqs,
         }
 
     def load_tokens(self) -> dict[str, Any]:
@@ -247,6 +257,17 @@ class DidaScheduler:
         if service is None:
             return "⚠️ Dida 未配置，请先在 agent_config.yaml 中填写 client_id/client_secret/redirect_uri。"
         user_key = str(user_id).strip()
+        
+        # Admin impersonation check
+        target_user_id = str(getattr(action, "target_user_id", "") or "").strip()
+        if target_user_id and target_user_id != user_key:
+            runtime_config = self._get_runtime_config()
+            admin_qqs = runtime_config.get("admin_qqs", [])
+            if user_key in admin_qqs:
+                user_key = target_user_id
+            else:
+                return f"⚠️ 权限不足：你不是管理员，无法操作用户 {target_user_id} 的任务。"
+                
         tokens = self.load_tokens()
         token_data = tokens.get(user_key)
         if not isinstance(token_data, dict):
@@ -447,7 +468,13 @@ class DidaScheduler:
                     if due_raw:
                         dt = _parse_dida_datetime(due_raw)
                         if dt:
-                            due_info = f" | {dt.strftime('%m-%d %H:%M')}"
+                            # Convert to local time for display
+                            dt_local = dt.astimezone()
+                            is_all_day = bool(task.get("isAllDay"))
+                            if is_all_day:
+                                due_info = f" | {dt_local.strftime('%m-%d')}"
+                            else:
+                                due_info = f" | {dt_local.strftime('%m-%d %H:%M')}"
                     
                     lines.append(f"- {title}{due_info}")
                 
@@ -544,7 +571,8 @@ class DidaScheduler:
                              "title": task.get("title"),
                              "project": project_name,
                              "projectId": project_id,
-                             "due": task.get("dueDate")
+                             "due": task.get("dueDate"),
+                             "isAllDay": task.get("isAllDay")
                          })
 
                 if not tasks and isinstance(data, dict):
@@ -573,6 +601,8 @@ class DidaScheduler:
                         continue
                     title = str(task.get("title", "") or "").strip()
                     due_display = due_dt.astimezone().strftime("%Y-%m-%d %H:%M")
+                    if bool(task.get("isAllDay")):
+                        due_display = due_dt.astimezone().strftime("%Y-%m-%d") + " (全天)"
                     message = f"⏰ 任务到期提醒\n标题：{title}\n到期：{due_display}\nID: {task.get('id')}"
                     await self._send_route(chat_type, target_id, creator_id, message)
             
