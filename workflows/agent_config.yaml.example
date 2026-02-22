@@ -158,3 +158,78 @@ auto_reply_config:
         reply_prompt: |
           你是私聊助理。
           回答要直接、清晰、可执行。
+
+dida_agent_config:
+  file_name: dida_agent.py
+  config:
+    model: qwen3-max-2026-01-23
+    temperature: 0.1
+    # context_history_limit：最多携带多少条历史上下文
+    context_history_limit: 50
+    # context_max_chars：历史上下文总字符上限（超过后截断）
+    context_max_chars: 2000
+    # context_window_seconds：只读取最近 N 秒的历史消息作为上下文
+    context_window_seconds: 0
+    # min_reply_interval_seconds：同一会话两次自动回复的最小间隔（冷却）
+    min_reply_interval_seconds: 10
+    # flush_check_interval_seconds：pending 扫描周期，单位秒
+    flush_check_interval_seconds: 10
+    # pending_expire_seconds：pending 最长保留时长，超时后丢弃
+    pending_expire_seconds: 3600
+    # bypass_cooldown_when_at_bot：群聊里 @bot 时是否跳过冷却立即触发
+    bypass_cooldown_when_at_bot: true
+    # pending_max_messages：冷却期间每会话最多累计的待处理消息数
+    pending_max_messages: 50
+
+    # rules：自动回复规则列表（每个元素对应一个群聊或私聊目标）
+    # 你可以按需添加多个规则，逐条匹配。
+    rules:
+      - enabled: true
+        chat_type: group
+        number: "1231231234"
+        # trigger_mode：触发条件逻辑表达式
+        trigger_mode: "ai_decide"
+        dida_enabled: true
+        
+        # ai_decision_prompt：仅在涉及任务管理时触发
+        ai_decision_prompt: |
+          你是任务管理助手。请仅在用户意图涉及“任务管理”时回复。
+          必须回复的情况：
+          1. 用户明确请求创建、查看、修改、完成、删除任务。
+          2. 包含关键词：任务、清单、待办、打卡、todo、list。
+          
+          绝对不回复的情况：
+          1. 闲聊、问候、情感交流。
+          2. 与任务管理无关的任何话题。
+          3. 只是简单的 @ 你但没有任务指令。
+
+        # reply_prompt：仅处理任务指令，禁止闲聊
+        reply_prompt: |
+          你是任务管理助手。只处理任务相关指令。
+          回复策略：
+             - 创建任务：识别标题、到期时间、是否全天、重复规则，生成 dida_action.action_type=create。
+             - 查看列表：用户说“任务列表/我的任务/列表”或 /list，生成 dida_action.action_type=list，可带 limit。
+             - 更新任务：用户说“修改/推迟/延后”任务，生成 dida_action.action_type=update，提取 task_id。
+             - 完成任务：用户说“完成/做完/已完成”，生成 dida_action.action_type=complete，提取 task_id。
+             - 删除任务：用户说“删除/取消这个任务”，生成 dida_action.action_type=delete，提取 task_id。
+             - 必须从上下文中找到准确的 task_id (如 "67b8...")，不要编造。
+             - 回复要简短，不要重复系统会返回的 taskId 细节。
+          输出格式必须是结构化 JSON，对应 AutoReplyGeneratedReply。
+
+dida_scheduler_config:
+  file_name: dida_scheduler.py
+  config:
+    # 滴答清单/TickTick API 配置
+    # 请在 https://developer.dida365.com/manage 申请
+    client_id: ""
+    client_secret: ""
+    redirect_uri: "" # 需与申请时填写的 Redirect URL 一致，如无个人网址，可用http://www.baidu.com
+    
+    # 轮询间隔（秒）
+    poll_interval_seconds: 60
+    # 提前提醒窗口（秒），在此窗口内的任务会触发提醒
+    due_window_seconds: 60
+    # 每次扫描最大任务数
+    max_tasks_scan_per_user: 200
+    # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
+    project_ids: []
