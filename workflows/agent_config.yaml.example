@@ -164,6 +164,13 @@ dida_agent_config:
   config:
     model: qwen3-max-2026-01-23
     temperature: 0.1
+    # bot_qq：机器人自身的 QQ 号，用于判断 at_bot
+    bot_qq: "12345678"
+
+    # admin_qqs: 管理员 QQ 号列表，拥有操作他人任务的权限
+    admin_qqs:
+      - "12345678"
+
     # context_history_limit：最多携带多少条历史上下文
     context_history_limit: 50
     # context_max_chars：历史上下文总字符上限（超过后截断）
@@ -233,3 +240,7 @@ dida_scheduler_config:
     max_tasks_scan_per_user: 200
     # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
     project_ids: []
+    
+    # admin_qqs: 管理员 QQ 号列表，用于 Scheduler 鉴权
+    admin_qqs:
+      - "12345678"
