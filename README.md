@@ -96,19 +96,6 @@ docker-compose容器化安装：
 - **全局总览**：可选，在所有群摘要之上再生成一句话总体态势
 - **发送模式**：支持单条聚合消息或“总览+各群明细”多条发送
 
-### 4. DidaScheduler 任务管理工作流
-
-- **功能**：通过自然语言（AutoReply 识别）或命令管理滴答清单/TickTick 任务。
-- **触发方式**：
-  - **命令**：`/dida_auth`（授权）、`/bind_dida`（绑定）、`/help`（查看帮助）
-  - **自然语言**：在 AutoReply 开启的群/私聊中，说“提醒我明天买牛奶”等（需 AutoReply 判定为需要操作）。
-- **配置要求**：需在 `agent_config.yaml` 中配置 Client ID/Secret。
-- **主要特性**：
-  - **任务创建**：支持识别标题、时间、描述、所属项目。
-  - **任务查询**：LLM 上下文可获取近期任务列表，避免重复创建。
-  - **到期提醒**：主动轮询并在 QQ 提醒即将到期的任务（支持群/私聊路由）。
-
-
 ## 消息处理详细流程
 
 ### 核心处理链路
@@ -215,15 +202,6 @@ auto_reply_config:
         number: "群号"
         trigger_mode: "ai_decide || keyword"
         # ...
-
-dida_scheduler_config:
-  file_name: dida_scheduler.py
-  config:
-    client_id: "your_id"
-    client_secret: "your_secret"
-    redirect_uri: "your_url"
-    poll_interval_seconds: 60
-
 ```
 
 系统启动时自动加载，修改配置后**无需重启**，下一次调用对应工作流时即生效（`load_current_agent_config` 每次重新读取文件）。
@@ -245,9 +223,8 @@ pip install -r requirements.txt
 ### 配置
 
 1. 复制 `.env.example` 为 `.env`，填写 API 密钥。
-2. 按需修改 `agent_config.yaml`，至少配置 `auto_reply_config.rules` 和 `forward_config.monitor_group_qq_number`。如需使用滴答清单，请填写 `dida_scheduler_config` 的 client_id/secret。
+2. 按需修改 `agent_config.yaml`，至少配置 `auto_reply_config.rules` 和 `forward_config.monitor_group_qq_number`。
 3. 在 `bot.py` 中设置机器人 QQ 号及允许处理的群白名单（`allowed_id`）。
-
 
 ### 启动
 
@@ -258,9 +235,7 @@ python main.py
 ### 首次使用
 
 - 向机器人私聊发送 `/summary` 测试手动摘要功能。
-- 向机器人发送 `/dida_auth` 获取授权链接，完成后发送 `/bind_dida code=...` 绑定滴答清单。
 - 在监控群内发送含关键词的消息，观察自动回复。
-
 - 查看 `logs/agent_events.jsonl` 确认日志写入正常。
 
 ## 安全机制

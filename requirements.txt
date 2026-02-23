@@ -6,7 +6,6 @@ langchain              # LLM 调用基础
 langchain-openai      # OpenAI 风格 API 适配
 langgraph            # 状态机工作流
 pydantic              # 结构化输出
-instructor             # 结构化输出增强（用于模糊匹配等）
 
 # 配置与工具
 python-dotenv         # 环境变量加载
