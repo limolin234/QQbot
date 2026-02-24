@@ -327,9 +327,20 @@ class DidaScheduler:
             created = await asyncio.to_thread(service.create_task, access_token=access_token, payload=payload)
             task_id = str(created.get("id") or created.get("taskId") or "").strip()
             self._log(f"task_created user={user_key} project={project_id} task={task_id or 'unknown'}")
-            if task_id:
-                return f"✅ 已创建任务：{title}\nID: {task_id}"
-            return "✅ 已创建任务"
+
+            due_display = ""
+            if due_date:
+                dt = _parse_dida_datetime(due_date)
+                if dt:
+                    dt_local = dt.astimezone()
+                    if bool(payload.get("isAllDay")):
+                        due_display = dt_local.strftime("%m-%d") + " (全天)"
+                    else:
+                        due_display = dt_local.strftime("%m-%d %H:%M")
+
+            if due_display:
+                return f"✅ 已创建任务：{title} 📅 {due_display}"
+            return f"✅ 已创建任务：{title}"
         if action_type == "update":
             target_task_id = str(getattr(action, "task_id", "") or "").strip()
             title = str(getattr(action, "title", "") or "").strip()
