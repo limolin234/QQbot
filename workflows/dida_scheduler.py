@@ -381,6 +381,20 @@ class DidaScheduler:
             )
             
             self._log(f"task_updated user={user_key} project={pid} task={payload['id']}")
+
+            due_display = ""
+            due_value = str(payload.get("dueDate") or "").strip()
+            if due_value:
+                dt = _parse_dida_datetime(due_value)
+                if dt:
+                    dt_local = dt.astimezone()
+                    if bool(payload.get("isAllDay")):
+                        due_display = dt_local.strftime("%m-%d") + " (全天)"
+                    else:
+                        due_display = dt_local.strftime("%m-%d %H:%M")
+
+            if due_display:
+                return f"✅ 已更新任务：{payload.get('title')} 📅 {due_display}"
             return f"✅ 已更新任务：{payload.get('title')}"
         if action_type == "list":
             # 如果用户未显式指定 project_id，则忽略默认项目，拉取所有项目

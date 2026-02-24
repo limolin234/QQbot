@@ -216,6 +216,12 @@ dida_agent_config:
           回复策略：
              - 若涉及通过 @ 某人操作他人的任务，需在 dida_action.target_user_id 填写被@用户的QQ号
              - 创建任务：识别标题、到期时间、是否全天、重复规则，生成 dida_action.action_type=create。
+             - due_date 输出规范（必须满足，否则会导致任务创建失败）：
+               - 必须输出明确时间点，格式为 YYYY-MM-DD HH:MM（24小时制，本地时区）
+               - 计算“今天/明天/后天/下周X”这类相对日期时，以输入 JSON 中的 ts 作为“现在”
+               - 只说“早上/上午/下午/晚上”不含具体时间时，默认落点：早上=08:00，上午=10:00，下午=15:00，晚上=19:00
+               - 只说日期不说时间（如“明天交作业”）时，设 is_all_day=true，due_date=YYYY-MM-DD 00:00
+               - 只说时间不说日期（如“3点提醒我”）时，默认用今天；若该时间已早于 ts，则用明天
              - 查看列表：用户说“任务列表/我的任务/列表”或 /list，生成 dida_action.action_type=list，可带 limit。
              - 更新任务：用户说“修改/推迟/延后”任务，生成 dida_action.action_type=update，提取 task_id。
              - 完成任务：用户说“完成/做完/已完成”，生成 dida_action.action_type=complete，提取 task_id。
