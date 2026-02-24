@@ -446,41 +446,37 @@ class DidaScheduler:
                 return (0, due) if due else (1, "")
             
             output_parts = ["**任务列表**"]
-            current_count = 0
 
+            all_tasks: list[tuple[str, dict[str, Any]]] = []
             for p_name, tasks in project_groups:
-                if current_count >= max_items:
-                    break
-                
-                tasks.sort(key=_sort_key)
-                
-                remaining = max_items - current_count
-                display_tasks = tasks[:remaining]
-                
-                if not display_tasks:
-                    continue
-                
-                lines = [f"📂 {p_name}"]
-                for task in display_tasks:
-                    title = str(task.get("title", "") or "").strip()
-                    due_raw = str(task.get("dueDate", "") or "").strip()
-                    due_info = ""
-                    if due_raw:
-                        dt = _parse_dida_datetime(due_raw)
-                        if dt:
-                            # Convert to local time for display
-                            dt_local = dt.astimezone()
-                            is_all_day = bool(task.get("isAllDay"))
-                            if is_all_day:
-                                due_info = f" | {dt_local.strftime('%m-%d')}"
-                            else:
-                                due_info = f" | {dt_local.strftime('%m-%d %H:%M')}"
-                    
-                    lines.append(f"- {title}{due_info}")
-                
-                output_parts.append("\n".join(lines))
-                current_count += len(display_tasks)
-            
+                for task in tasks:
+                    all_tasks.append((p_name, task))
+
+            all_tasks.sort(key=lambda item: _sort_key(item[1]))
+            display_tasks = all_tasks[:max_items]
+
+            if not display_tasks:
+                return "暂无未完成任务。"
+
+            lines = []
+            for p_name, task in display_tasks:
+                title = str(task.get("title", "") or "").strip()
+                due_raw = str(task.get("dueDate", "") or "").strip()
+                due_info = ""
+                if due_raw:
+                    dt = _parse_dida_datetime(due_raw)
+                    if dt:
+                        # Convert to local time for display
+                        dt_local = dt.astimezone()
+                        is_all_day = bool(task.get("isAllDay"))
+                        if is_all_day:
+                            due_info = f" | {dt_local.strftime('%m-%d')}"
+                        else:
+                            due_info = f" | {dt_local.strftime('%m-%d %H:%M')}"
+                project_info = f" | {p_name}" if p_name else ""
+                lines.append(f"- {title}{due_info}{project_info}")
+
+            output_parts.append("\n".join(lines))
             return "\n".join(output_parts)
 
         if action_type in {"delete", "complete"}:
