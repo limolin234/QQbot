@@ -3,17 +3,10 @@ name: Build and Release
 on:
   workflow_dispatch:
     inputs:
-      auto_increment:
-        description: '是否自动自增版本号'
+      version:
+        description: '版本号 (如: v1.0.0.0)'
         required: true
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-        default: 'true'
-      custom_version:
-        description: '自定义版本号 (留空则自动自增，如: v1.0.0.1)'
-        required: false
+        default: 'v1.0.0.0'
   push:
     tags:
       - 'v*'
@@ -21,93 +14,58 @@ on:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
       - name: Determine version
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
             VERSION=${{ github.ref_name }}
-          elif [[ "${{ github.event.inputs.custom_version }}" != "" ]]; then
-            VERSION=${{ github.event.inputs.custom_version }}
           else
-            # 获取最新 tag，自动自增
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0.0")
-            IFS='.' read -r -a parts <<< "${LATEST_TAG#v}"
-            parts[3]=$((${parts[3]:-0} + 1))
-            VERSION="v${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}"
+            VERSION=${{ github.event.inputs.version }}
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "版本号: $VERSION"
       
       - name: Create deploy package
-        run: |
-          tar -czf qqbot.tar.gz deploy/
+        run: tar -czf qqbot.tar.gz deploy/
           
       - name: Generate download script
         run: |
           cat > qqbot_download.sh << 'EOF'
           #!/bin/bash
-          
-          # ----------------------------------------------------------------
-          # 脚本名称: qqbot_download.sh
-          # 描述: 自动下载并部署 QQbot 文件夹
-          # ----------------------------------------------------------------
-          
-          # 1. 配置变量
           URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/qqbot.tar.gz"
           INSTALL_DIR="qqbot_deploy"
           TEMP_FILE="deploy.tar.gz"
-          
           set -euo pipefail
-          
           echo "--- 开始部署 QQbot ---"
-          
-          # 2. 环境检查
           echo "[1/4] 检查依赖环境..."
           for cmd in curl tar; do
               if ! command -v $cmd &> /dev/null; then
-                  echo "错误: 未安装 $cmd，请先安装后再运行此脚本。"
+                  echo "错误: 未安装 $cmd"
                   exit 1
               fi
           done
-          
-          # 3. 下载文件
-          echo "[2/4] 正在从 GitHub 下载资源..."
-          if curl -fsSL "$URL" -o "$TEMP_FILE"; then
-              echo "下载完成。"
-          else
-              echo "错误: 下载失败，请检查网络连接或 URL 是否有效。"
-              exit 1
-          fi
-          
-          # 4. 解压文件
-          echo "[3/4] 正在解压到目录: $INSTALL_DIR..."
+          echo "[2/4] 正在下载..."
+          curl -fsSL "$URL" -o "$TEMP_FILE"
+          echo "[3/4] 正在解压..."
           mkdir -p "$INSTALL_DIR"
           tar -xzf "$TEMP_FILE" -C "$INSTALL_DIR" --strip-components=1
-          
-          # 5. 清理与完成
-          echo "[4/4] 正在清理临时文件..."
+          echo "[4/4] 清理临时文件..."
           rm "$TEMP_FILE"
-          
-          echo "---------------------------------------"
           echo "✅ 部署成功！"
-          echo "项目位置: $(pwd)/$INSTALL_DIR"
-          echo "提示: 请进入目录查看文件内容。"
           EOF
-          
           chmod +x qqbot_download.sh
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          body: |
-            给一键脚本用的压缩包，手动下载下来然后配置也是可以的，内含readme.md
+          body: 给一键脚本用的压缩包，手动下载下来然后配置也是可以的，内含readme.md
           files: |
             qqbot.tar.gz
             qqbot_download.sh
