@@ -529,6 +529,18 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
         dida_action = result.get("dida_action")
         dida_response = ""
         if dida_action is not None:
+            runtime_config = get_dida_agent_runtime_config()
+            admin_qqs = runtime_config.get("admin_qqs", [])
+            if str(user_id) in admin_qqs:
+                target_user_id = str(getattr(dida_action, "target_user_id", "") or "").strip()
+                if not target_user_id:
+                    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message or "")
+                    for uid in at_matches:
+                        if uid and uid != str(user_id):
+                            setattr(dida_action, "target_user_id", uid)
+                            break
+                    if at_matches and not str(getattr(dida_action, "target_user_id", "") or "").strip():
+                        setattr(dida_action, "target_user_id", str(at_matches[0]))
             try:
                 dida_response = await dida_scheduler.execute_action(
                     action=dida_action,

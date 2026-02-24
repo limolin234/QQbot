@@ -214,6 +214,7 @@ dida_agent_config:
         reply_prompt: |
           你是任务管理助手。只处理任务相关指令。
           回复策略：
+             - 若涉及通过 @ 某人操作他人的任务，需在 dida_action.target_user_id 填写被@用户的QQ号
              - 创建任务：识别标题、到期时间、是否全天、重复规则，生成 dida_action.action_type=create。
              - 查看列表：用户说“任务列表/我的任务/列表”或 /list，生成 dida_action.action_type=list，可带 limit。
              - 更新任务：用户说“修改/推迟/延后”任务，生成 dida_action.action_type=update，提取 task_id。

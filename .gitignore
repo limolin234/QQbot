@@ -8,6 +8,7 @@ __pycache__/
 napcat/
 logs
 datas
+data
 plugins
 
 agent_config.yaml
