@@ -616,7 +616,7 @@ class DidaScheduler:
                     route = _extract_route(task.get("content")) or _extract_route(task.get("desc"))
                     if not route:
                         continue
-                    chat_type, target_id, creator_id = route
+                    chat_type, target_id, _ = route
                     key = f"{user_id}:{task.get('id')}:{task.get('dueDate')}"
                     if not self._should_notify(key):
                         continue
@@ -625,7 +625,8 @@ class DidaScheduler:
                     if bool(task.get("isAllDay")):
                         due_display = due_dt.astimezone().strftime("%Y-%m-%d") + " (全天)"
                     message = f"⏰ 任务到期提醒\n标题：{title}\n到期：{due_display}\nID: {task.get('id')}"
-                    await self._send_route(chat_type, target_id, creator_id, message)
+                    # Use user_id (the task owner) as the mention target instead of creator_id
+                    await self._send_route(chat_type, target_id, user_id, message)
             
             # Save context for AI
             self._save_task_context(user_id, user_active_tasks)
@@ -652,9 +653,9 @@ class DidaScheduler:
         except Exception as e:
             self._log(f"save_context_failed error={e}")
 
-    async def _send_route(self, chat_type: str, target_id: str, creator_id: str, text: str) -> None:
+    async def _send_route(self, chat_type: str, target_id: str, mention_user_id: str, text: str) -> None:
         if chat_type == "group":
-            prefix = f"[CQ:at,qq={creator_id}] " if creator_id else ""
+            prefix = f"[CQ:at,qq={mention_user_id}] " if mention_user_id else ""
             await bot.api.post_group_msg(str(target_id), text=prefix + text)
         else:
             await bot.api.post_private_msg(str(target_id), text=text)
