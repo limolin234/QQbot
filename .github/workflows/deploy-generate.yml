@@ -30,6 +30,32 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "版本号: $VERSION"
+          
+      # [新增步骤]：大胆创新，自动同步最新配置；谨慎落实，严格校验文件存在性
+      - name: Update example files in deploy directory
+        run: |
+          echo "--- 开始同步最新的配置文件到 deploy 目录 ---"
+          
+          # 确保目标子目录存在
+          mkdir -p deploy/workflows
+          
+          # 1. 同步 .env.example
+          if [ -f ".env.example" ]; then
+            cp -f .env.example deploy/.env.example
+            echo "✅ 已更新 deploy/.env.example"
+          fi
+          
+          # 2. 同步 config.yaml (主目录无example后缀，拷贝时自动重命名为example，防止泄露真实配置)
+          if [ -f "config.yaml" ]; then
+            cp -f config.yaml deploy/config.yaml.example
+            echo "✅ 已更新 deploy/config.yaml.example"
+          fi
+          
+          # 3. 同步 workflows/agent_config.yaml.example
+          if [ -f "workflows/agent_config.yaml.example" ]; then
+            cp -f workflows/agent_config.yaml.example deploy/workflows/agent_config.yaml.example
+            echo "✅ 已更新 deploy/workflows/agent_config.yaml.example"
+          fi
       
       - name: Create deploy package
         run: tar -czf qqbot.tar.gz deploy/
