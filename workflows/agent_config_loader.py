@@ -43,26 +43,37 @@ def load_current_agent_config(module_file: str) -> dict[str, Any]:
     module_dir = os.path.dirname(module_file)
     current_file_name = os.path.basename(module_file)
 
-    yaml_path = os.path.join(module_dir, "agent_config.yaml")
-    if yaml is not None and os.path.exists(yaml_path):
-        try:
-            with open(yaml_path, "r", encoding="utf-8") as file:
-                payload = yaml.safe_load(file)
-        except (OSError, yaml.YAMLError):
-            payload = None
+    # 优先查找当前目录，若无则查找上级目录（适配子目录中的 agent）
+    search_dirs = [module_dir, os.path.dirname(module_dir)]
 
-        if isinstance(payload, dict):
-            for item in payload.values():
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("file_name", "")).strip() != current_file_name:
-                    continue
-                config = item.get("config")
-                if isinstance(config, dict):
-                    return dict(config)
+    for directory in search_dirs:
+        # 1. Try YAML
+        yaml_path = os.path.join(directory, "agent_config.yaml")
+        if yaml is not None and os.path.exists(yaml_path):
+            try:
+                with open(yaml_path, "r", encoding="utf-8") as file:
+                    payload = yaml.safe_load(file)
+            except (OSError, yaml.YAMLError):
+                payload = None
 
-    config_path = os.path.join(module_dir, "agent_config.json")
-    return load_agent_config_by_filename(current_file_name, config_path=config_path)
+            if isinstance(payload, dict):
+                for item in payload.values():
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("file_name", "")).strip() != current_file_name:
+                        continue
+                    config = item.get("config")
+                    if isinstance(config, dict):
+                        return dict(config)
+
+        # 2. Try JSON
+        json_path = os.path.join(directory, "agent_config.json")
+        if os.path.exists(json_path):
+            config = load_agent_config_by_filename(current_file_name, config_path=json_path)
+            if config:
+                return config
+
+    return {}
 
 
 _cache: Dict[Tuple[str, str], bool] = {}
