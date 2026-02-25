@@ -35,6 +35,7 @@ from typing import Any, TypedDict
 import json
 import os
 import re
+import aiocron
 
 from ncatbot.core import GroupMessage, PrivateMessage
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -292,6 +293,8 @@ class SummaryGraphState(TypedDict):
     map_result: SummaryMapResult | None
     final_result: SummaryFinalResult | None
 
+async def start_up():
+    aiocron.crontab('0 22 * * *', func=lambda: daily_summary(run_mode="auto"))
 
 def build_summary_chunks_from_log_lines(
     lines: list[str],
@@ -978,7 +981,7 @@ def _write_log(
         file.flush()
 
 
-async def process_group_message(msg: GroupMessage) -> None:
+async def group_entrance(msg: GroupMessage) -> None:
     cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
     ts = _extract_message_ts(msg)
     user_name = _extract_user_name(msg)
@@ -995,7 +998,7 @@ async def process_group_message(msg: GroupMessage) -> None:
         )
 
 
-async def process_private_message(msg: PrivateMessage) -> None:
+async def private_entrance(msg: PrivateMessage) -> None:
     cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
     ts = _extract_message_ts(msg)
     user_name = _extract_user_name(msg)
@@ -1010,6 +1013,9 @@ async def process_private_message(msg: PrivateMessage) -> None:
             "private",
             cleaned_message,
         )
+    if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
+        await daily_summary(run_mode="manual")
+        await bot.api.post_private_msg(msg.user_id, text="Starting...")
 
 
 async def _execute_daily_summary(run_mode: str = "manual") -> None:

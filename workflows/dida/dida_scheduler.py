@@ -8,8 +8,8 @@ from typing import Any
 from ncatbot.core import GroupMessage, PrivateMessage
 
 from bot import bot
-from workflows.agent_config_loader import load_current_agent_config
-from workflows.dida_service import DidaService
+from ..agent_config_loader import load_current_agent_config
+from .dida_service import DidaService
 
 
 def _now() -> datetime:

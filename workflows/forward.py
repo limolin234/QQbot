@@ -116,7 +116,7 @@ def _extract_user_name(msg: GroupMessage) -> str:
     return str(getattr(msg, "user_id", "unknown_user"))
 
 
-async def enqueue_forward_by_monitor_group(msg: GroupMessage) -> bool:
+async def group_entrance(msg: GroupMessage) -> bool:
     monitor_group_ids = get_forward_monitor_group_ids()
     group_id = str(getattr(msg, "group_id", ""))
     if group_id not in monitor_group_ids:

@@ -20,9 +20,9 @@ from pydantic import BaseModel, Field
 
 from agent_pool import submit_agent_job
 from bot import bot
-from workflows.agent_observe import bind_agent_event, generate_run_id
-from workflows.agent_config_loader import load_current_agent_config
-from workflows.dida_scheduler import dida_scheduler
+from ..agent_observe import bind_agent_event, generate_run_id
+from ..agent_config_loader import load_current_agent_config
+from .dida_scheduler import dida_scheduler
 
 try:
     from dotenv import load_dotenv

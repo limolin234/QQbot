@@ -31,6 +31,8 @@ except Exception:  # pragma: no cover
 
 AUTO_REPLY_CONFIG = load_current_agent_config(__file__)
 
+async def start_up():
+    asyncio.create_task(auto_reply_pending_worker())
 
 def get_auto_reply_runtime_config() -> dict[str, Any]:
     """读取并规范化 auto_reply 运行时配置。"""
@@ -570,7 +572,7 @@ async def auto_reply_pending_worker() -> None:
     await dispatcher.pending_worker(enqueue_payload=_enqueue_auto_reply_payload)
 
 
-async def enqueue_auto_reply_if_monitored(
+async def entrance(
     msg: GroupMessage | PrivateMessage,
     chat_type: str,
 ) -> bool:
