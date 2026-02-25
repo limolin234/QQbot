@@ -103,11 +103,21 @@ class DidaScheduler:
         project_ids = config.get("project_ids")
         if not isinstance(project_ids, list):
             project_ids = []
+            
+        admin_qqs_raw = config.get("admin_qqs", [])
+        if isinstance(admin_qqs_raw, str):
+            admin_qqs = [x.strip() for x in admin_qqs_raw.split(",") if x.strip()]
+        elif isinstance(admin_qqs_raw, list):
+            admin_qqs = [str(x).strip() for x in admin_qqs_raw if str(x).strip()]
+        else:
+            admin_qqs = []
+            
         return {
             "poll_interval_seconds": max(poll_interval_seconds, 5),
             "due_window_seconds": max(due_window_seconds, 30),
             "max_tasks_scan_per_user": max(max_tasks_scan, 50),
             "project_ids": [str(item).strip() for item in project_ids if str(item).strip()],
+            "admin_qqs": admin_qqs,
         }
 
     def load_tokens(self) -> dict[str, Any]:
@@ -247,6 +257,17 @@ class DidaScheduler:
         if service is None:
             return "⚠️ Dida 未配置，请先在 agent_config.yaml 中填写 client_id/client_secret/redirect_uri。"
         user_key = str(user_id).strip()
+        
+        # Admin impersonation check
+        target_user_id = str(getattr(action, "target_user_id", "") or "").strip()
+        if target_user_id and target_user_id != user_key:
+            runtime_config = self._get_runtime_config()
+            admin_qqs = runtime_config.get("admin_qqs", [])
+            if user_key in admin_qqs:
+                user_key = target_user_id
+            else:
+                return f"⚠️ 权限不足：你不是管理员，无法操作用户 {target_user_id} 的任务。"
+                
         tokens = self.load_tokens()
         token_data = tokens.get(user_key)
         if not isinstance(token_data, dict):
@@ -306,9 +327,20 @@ class DidaScheduler:
             created = await asyncio.to_thread(service.create_task, access_token=access_token, payload=payload)
             task_id = str(created.get("id") or created.get("taskId") or "").strip()
             self._log(f"task_created user={user_key} project={project_id} task={task_id or 'unknown'}")
-            if task_id:
-                return f"✅ 已创建任务：{title}\nID: {task_id}"
-            return "✅ 已创建任务"
+
+            due_display = ""
+            if due_date:
+                dt = _parse_dida_datetime(due_date)
+                if dt:
+                    dt_local = dt.astimezone()
+                    if bool(payload.get("isAllDay")):
+                        due_display = dt_local.strftime("%m-%d") + " (全天)"
+                    else:
+                        due_display = dt_local.strftime("%m-%d %H:%M")
+
+            if due_display:
+                return f"✅ 已创建任务：{title} 📅 {due_display}"
+            return f"✅ 已创建任务：{title}"
         if action_type == "update":
             target_task_id = str(getattr(action, "task_id", "") or "").strip()
             title = str(getattr(action, "title", "") or "").strip()
@@ -349,6 +381,20 @@ class DidaScheduler:
             )
             
             self._log(f"task_updated user={user_key} project={pid} task={payload['id']}")
+
+            due_display = ""
+            due_value = str(payload.get("dueDate") or "").strip()
+            if due_value:
+                dt = _parse_dida_datetime(due_value)
+                if dt:
+                    dt_local = dt.astimezone()
+                    if bool(payload.get("isAllDay")):
+                        due_display = dt_local.strftime("%m-%d") + " (全天)"
+                    else:
+                        due_display = dt_local.strftime("%m-%d %H:%M")
+
+            if due_display:
+                return f"✅ 已更新任务：{payload.get('title')} 📅 {due_display}"
             return f"✅ 已更新任务：{payload.get('title')}"
         if action_type == "list":
             # 如果用户未显式指定 project_id，则忽略默认项目，拉取所有项目
@@ -425,35 +471,37 @@ class DidaScheduler:
                 return (0, due) if due else (1, "")
             
             output_parts = ["**任务列表**"]
-            current_count = 0
 
+            all_tasks: list[tuple[str, dict[str, Any]]] = []
             for p_name, tasks in project_groups:
-                if current_count >= max_items:
-                    break
-                
-                tasks.sort(key=_sort_key)
-                
-                remaining = max_items - current_count
-                display_tasks = tasks[:remaining]
-                
-                if not display_tasks:
-                    continue
-                
-                lines = [f"📂 {p_name}"]
-                for task in display_tasks:
-                    title = str(task.get("title", "") or "").strip()
-                    due_raw = str(task.get("dueDate", "") or "").strip()
-                    due_info = ""
-                    if due_raw:
-                        dt = _parse_dida_datetime(due_raw)
-                        if dt:
-                            due_info = f" | {dt.strftime('%m-%d %H:%M')}"
-                    
-                    lines.append(f"- {title}{due_info}")
-                
-                output_parts.append("\n".join(lines))
-                current_count += len(display_tasks)
-            
+                for task in tasks:
+                    all_tasks.append((p_name, task))
+
+            all_tasks.sort(key=lambda item: _sort_key(item[1]))
+            display_tasks = all_tasks[:max_items]
+
+            if not display_tasks:
+                return "暂无未完成任务。"
+
+            lines = []
+            for p_name, task in display_tasks:
+                title = str(task.get("title", "") or "").strip()
+                due_raw = str(task.get("dueDate", "") or "").strip()
+                due_info = ""
+                if due_raw:
+                    dt = _parse_dida_datetime(due_raw)
+                    if dt:
+                        # Convert to local time for display
+                        dt_local = dt.astimezone()
+                        is_all_day = bool(task.get("isAllDay"))
+                        if is_all_day:
+                            due_info = f" | {dt_local.strftime('%m-%d')}"
+                        else:
+                            due_info = f" | {dt_local.strftime('%m-%d %H:%M')}"
+                project_info = f" | {p_name}" if p_name else ""
+                lines.append(f"- {title}{due_info}{project_info}")
+
+            output_parts.append("\n".join(lines))
             return "\n".join(output_parts)
 
         if action_type in {"delete", "complete"}:
@@ -544,7 +592,8 @@ class DidaScheduler:
                              "title": task.get("title"),
                              "project": project_name,
                              "projectId": project_id,
-                             "due": task.get("dueDate")
+                             "due": task.get("dueDate"),
+                             "isAllDay": task.get("isAllDay")
                          })
 
                 if not tasks and isinstance(data, dict):
@@ -573,6 +622,8 @@ class DidaScheduler:
                         continue
                     title = str(task.get("title", "") or "").strip()
                     due_display = due_dt.astimezone().strftime("%Y-%m-%d %H:%M")
+                    if bool(task.get("isAllDay")):
+                        due_display = due_dt.astimezone().strftime("%Y-%m-%d") + " (全天)"
                     message = f"⏰ 任务到期提醒\n标题：{title}\n到期：{due_display}\nID: {task.get('id')}"
                     await self._send_route(chat_type, target_id, creator_id, message)
             

@@ -8,9 +8,12 @@ __pycache__/
 napcat/
 logs
 data
+deploy/data
 plugins
 
+agent_config.yaml
 config.yaml
+dida*.json
 
 
 logs/message_handler.log

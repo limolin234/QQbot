@@ -164,6 +164,13 @@ dida_agent_config:
   config:
     model: qwen3-max-2026-01-23
     temperature: 0.1
+    # bot_qq：机器人自身的 QQ 号，用于判断 at_bot
+    bot_qq: "12345678"
+
+    # admin_qqs: 管理员 QQ 号列表，拥有操作他人任务的权限
+    admin_qqs:
+      - "12345678"
+
     # context_history_limit：最多携带多少条历史上下文
     context_history_limit: 50
     # context_max_chars：历史上下文总字符上限（超过后截断）
@@ -207,7 +214,14 @@ dida_agent_config:
         reply_prompt: |
           你是任务管理助手。只处理任务相关指令。
           回复策略：
+             - 若涉及通过 @ 某人操作他人的任务，需在 dida_action.target_user_id 填写被@用户的QQ号
              - 创建任务：识别标题、到期时间、是否全天、重复规则，生成 dida_action.action_type=create。
+             - due_date 输出规范（必须满足，否则会导致任务创建失败）：
+               - 必须输出明确时间点，格式为 YYYY-MM-DD HH:MM（24小时制，本地时区）
+               - 计算“今天/明天/后天/下周X”这类相对日期时，以输入 JSON 中的 ts 作为“现在”
+               - 只说“早上/上午/下午/晚上”不含具体时间时，默认落点：早上=08:00，上午=10:00，下午=15:00，晚上=19:00
+               - 只说日期不说时间（如“明天交作业”）时，设 is_all_day=true，due_date=YYYY-MM-DD 00:00
+               - 只说时间不说日期（如“3点提醒我”）时，默认用今天；若该时间已早于 ts，则用明天
              - 查看列表：用户说“任务列表/我的任务/列表”或 /list，生成 dida_action.action_type=list，可带 limit。
              - 更新任务：用户说“修改/推迟/延后”任务，生成 dida_action.action_type=update，提取 task_id。
              - 完成任务：用户说“完成/做完/已完成”，生成 dida_action.action_type=complete，提取 task_id。
@@ -226,10 +240,14 @@ dida_scheduler_config:
     redirect_uri: "" # 需与申请时填写的 Redirect URL 一致，如无个人网址，可用http://www.baidu.com
     
     # 轮询间隔（秒）
-    poll_interval_seconds: 60
+    poll_interval_seconds: 600
     # 提前提醒窗口（秒），在此窗口内的任务会触发提醒
     due_window_seconds: 60
     # 每次扫描最大任务数
     max_tasks_scan_per_user: 200
     # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
     project_ids: []
+    
+    # admin_qqs: 管理员 QQ 号列表，用于 Scheduler 鉴权
+    admin_qqs:
+      - "12345678"
