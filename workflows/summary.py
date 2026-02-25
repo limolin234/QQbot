@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from time import perf_counter
 from typing import Any, TypedDict
 import json
@@ -37,7 +37,7 @@ import os
 import re
 import aiocron
 
-from ncatbot.core import GroupMessage, PrivateMessage
+from ncatbot.core import PrivateMessage
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
@@ -47,6 +47,7 @@ from agent_pool import submit_agent_job
 from bot import QQnumber, bot
 from .agent_observe import bind_agent_event, generate_run_id
 from .agent_config_loader import load_current_agent_config
+from .message_observe import LOG_FILE_PATH, FILE_LOCK
 
 try:
     from dotenv import load_dotenv
@@ -58,8 +59,6 @@ UNKNOWN_GROUP = "unknown_group"
 UNKNOWN_USER = "unknown_user"
 UNKNOWN_CHAT = "group"
 SUMMARY_CURSOR_PATH = "data/summary_cursor.json"
-LOG_FILE_PATH = "message.jsonl"
-_FILE_LOCK = asyncio.Lock()
 
 SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
 
@@ -899,120 +898,7 @@ def get_summary_send_mode() -> str:
     return "single_message"
 
 
-def clean_message(raw_message: str) -> str:
-    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message)
-    at_text = f"[@{','.join(at_matches)}]" if at_matches else ""
-    cq_patterns = {
-        r"\[CQ:image,file=[^]]+\]": "[图片]",
-        r"\[CQ:reply,id=\d+\]": "[回复]",
-        r"\[CQ:file,file=[^]]+\]": "[文件]",
-        r"\[CQ:record,file=[^]]+\]": "[语音]",
-        r"\[CQ:video,file=[^]]+\]": "[视频]",
-    }
-    cleaned = raw_message
-    for pattern, replacement in cq_patterns.items():
-        cleaned = re.sub(pattern, replacement, cleaned)
-    if at_matches:
-        cleaned = re.sub(r"\[CQ:at,qq=\d+\]", at_text, cleaned)
-    return cleaned.strip()
-
-
-def _extract_message_ts(msg: GroupMessage | PrivateMessage) -> str:
-    ts_candidate = getattr(msg, "time", None)
-    if ts_candidate is not None:
-        try:
-            ts_value = float(ts_candidate)
-            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
-        except (TypeError, ValueError, OSError):
-            pass
-    return datetime.now().astimezone().isoformat(timespec="seconds")
-
-
-def _extract_user_name(msg: GroupMessage | PrivateMessage) -> str:
-    sender = getattr(msg, "sender", None)
-
-    def pick(data, *keys):
-        for key in keys:
-            if isinstance(data, dict):
-                value = data.get(key)
-            else:
-                value = getattr(data, key, None)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
-
-    for source in (msg, sender):
-        if not source:
-            continue
-        name = pick(
-            source,
-            "card",
-            "group_card",
-            "display_name",
-            "nickname",
-            "nick",
-            "user_name",
-            "sender_nickname",
-        )
-        if name:
-            return name
-
-    return str(getattr(msg, "user_id", "unknown_user"))
-
-
-def _write_log(
-    ts: str,
-    group_id: str,
-    user_id: str,
-    user_name: str,
-    chat_type: str,
-    cleaned_message: str,
-) -> None:
-    payload = {
-        "ts": ts,
-        "group_id": str(group_id),
-        "user_id": str(user_id),
-        "user_name": user_name,
-        "chat_type": chat_type,
-        "cleaned_message": cleaned_message,
-    }
-    with open(LOG_FILE_PATH, "a", encoding="utf-8") as file:
-        file.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        file.flush()
-
-
-async def group_entrance(msg: GroupMessage) -> None:
-    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
-    ts = _extract_message_ts(msg)
-    user_name = _extract_user_name(msg)
-
-    async with _FILE_LOCK:
-        await asyncio.to_thread(
-            _write_log,
-            ts,
-            str(getattr(msg, "group_id", "")),
-            str(getattr(msg, "user_id", "unknown")),
-            user_name,
-            "group",
-            cleaned_message,
-        )
-
-
 async def private_entrance(msg: PrivateMessage) -> None:
-    cleaned_message = clean_message(getattr(msg, "raw_message", "") or "")
-    ts = _extract_message_ts(msg)
-    user_name = _extract_user_name(msg)
-
-    async with _FILE_LOCK:
-        await asyncio.to_thread(
-            _write_log,
-            ts,
-            "private",
-            str(getattr(msg, "user_id", "unknown")),
-            user_name,
-            "private",
-            cleaned_message,
-        )
     if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
         await daily_summary(run_mode="manual")
         await bot.api.post_private_msg(msg.user_id, text="Starting...")
@@ -1024,7 +910,7 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
     print(f"开始读取日志: {file_path}")
 
     try:
-        async with _FILE_LOCK:
+        async with FILE_LOCK:
             try:
                 with open(file_path, "r", encoding="utf-8") as file:
                     raw_lines = [line.strip() for line in file if line.strip()]

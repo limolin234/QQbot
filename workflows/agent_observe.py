@@ -1,5 +1,3 @@
-"""统一 Agent 观测日志。"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -18,10 +16,23 @@ except Exception:  # pragma: no cover
 AGENT_LOG_PATH = Path("logs/agent_events.jsonl")
 _AGENT_LOG_LOCK = Lock()
 _REQUIRED_EVENT_KEYS = {"event_ts", "run_id", "agent_name", "task_type", "stage"}
-_LOG_CLEANUP_TRIGGER_LINES = 1000
-_LOG_MAX_LINES = 10000
-_LOG_TRIM_LINES = 1000
+_LOG_MAX_LINES = 3000
+_LOG_TRIM_TO_LINES = 1000
 _AGENT_LOG_WRITE_COUNTER = 0
+
+
+def start_up() -> None:
+    """初始化日志行计数器。"""
+    global _AGENT_LOG_WRITE_COUNTER
+    if not AGENT_LOG_PATH.exists():
+        _AGENT_LOG_WRITE_COUNTER = 0
+        return
+    
+    try:
+        with AGENT_LOG_PATH.open("r", encoding="utf-8") as file:
+            _AGENT_LOG_WRITE_COUNTER = sum(1 for _ in file)
+    except Exception:
+        _AGENT_LOG_WRITE_COUNTER = 0
 
 
 def _maybe_cleanup_agent_log() -> None:
@@ -35,7 +46,7 @@ def _maybe_cleanup_agent_log() -> None:
             lines = file.readlines()
             if len(lines) <= _LOG_MAX_LINES:
                 return
-            retained_lines = lines[_LOG_TRIM_LINES:]
+            retained_lines = lines[-_LOG_TRIM_TO_LINES:]
             file.seek(0)
             file.truncate(0)
             file.writelines(retained_lines)
@@ -102,11 +113,11 @@ def observe_agent_event(
             finally:
                 if fcntl is not None:
                     fcntl.flock(file.fileno(), fcntl.LOCK_UN)
-        if (
-            _LOG_CLEANUP_TRIGGER_LINES > 0
-            and _AGENT_LOG_WRITE_COUNTER % _LOG_CLEANUP_TRIGGER_LINES == 0
-        ):
+        
+        if _AGENT_LOG_WRITE_COUNTER >= _LOG_MAX_LINES:
             _maybe_cleanup_agent_log()
+            _AGENT_LOG_WRITE_COUNTER = _LOG_TRIM_TO_LINES
+    
     return final_run_id
 
 
