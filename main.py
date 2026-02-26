@@ -7,7 +7,7 @@ from workflows import summary, auto_reply, forward, dida
 
 @bot.private_event()# type: ignore
 async def on_private_message(msg: PrivateMessage):
-    message_observe.private_entrance(msg)
+    await message_observe.private_entrance(msg)
     if check_config("summary_config","./workflows"):
         await summary.private_entrance(msg)
     if check_config("auto_reply_config","./workflows"):
@@ -18,7 +18,7 @@ async def on_private_message(msg: PrivateMessage):
 
 @bot.group_event()# type: ignore
 async def on_group_message(msg: GroupMessage):
-    message_observe.group_entrance(msg)
+    await message_observe.group_entrance(msg)
     if check_config("forward_config","./workflows"):
         await forward.group_entrance(msg)
     if check_config("auto_reply_config","./workflows"):
