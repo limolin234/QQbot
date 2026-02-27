@@ -461,6 +461,20 @@ class DidaScheduler:
             
             # Update context for AI immediately after list
             all_tasks_for_context = []
+            
+            # Group tasks for better display
+            now = _now()
+            today_str = now.strftime("%Y-%m-%d")
+            tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            groups: dict[str, list[tuple[str, dict[str, Any]]]] = {
+                "已过期": [],
+                "今天": [],
+                "明天": [],
+                "以后": [],
+                "无日期": []
+            }
+
             for p_name, p_tasks in project_groups:
                 for t in p_tasks:
                     all_tasks_for_context.append({
@@ -471,53 +485,69 @@ class DidaScheduler:
                         "due": t.get("dueDate"),
                         "isAllDay": t.get("isAllDay")
                     })
+                    
+                    due_raw = str(t.get("dueDate", "") or "").strip()
+                    if not due_raw:
+                        groups["无日期"].append((p_name, t))
+                        continue
+                        
+                    dt = _parse_dida_datetime(due_raw)
+                    if not dt:
+                        groups["无日期"].append((p_name, t))
+                        continue
+                        
+                    dt_local = dt.astimezone()
+                    dt_str = dt_local.strftime("%Y-%m-%d")
+                    
+                    if dt_local < now and dt_str != today_str:
+                        groups["已过期"].append((p_name, t))
+                    elif dt_str == today_str:
+                        groups["今天"].append((p_name, t))
+                    elif dt_str == tomorrow_str:
+                        groups["明天"].append((p_name, t))
+                    else:
+                        groups["以后"].append((p_name, t))
+
             self._save_task_context(user_key, all_tasks_for_context)
             
             self._log(f"fetch_tasks_done total={total_tasks_count}")
 
             if not total_tasks_count:
-                return {"ok": True, "message": "暂无未完成任务。", "data": {"count": 0}}
+                return {"ok": True, "message": f"[CQ:at,qq={user_key}] 暂无未完成任务。", "data": {"count": 0}}
 
-            limit = getattr(action, "limit", None)
-            max_items = int(limit) if isinstance(limit, int) and limit > 0 else 20
-            
-            def _sort_key(t: dict[str, Any]) -> tuple[int, str]:
-                due = str(t.get("dueDate", "") or "")
-                return (0, due) if due else (1, "")
-            
-            output_parts = ["**任务列表**"]
+            output_parts = [f"[CQ:at,qq={user_key}]\n 的任务清单 (共 {total_tasks_count} 项)"]
+            output_parts.append("-" * 15)
 
-            all_tasks: list[tuple[str, dict[str, Any]]] = []
-            for p_name, tasks in project_groups:
-                for task in tasks:
-                    all_tasks.append((p_name, task))
+            for group_name in ["已过期", "今天", "明天", "以后", "无日期"]:
+                task_items = groups[group_name]
+                if not task_items:
+                    continue
+                
+                # Sort within group by due date
+                task_items.sort(key=lambda x: str(x[1].get("dueDate", "")))
+                
+                output_parts.append(f"[{group_name}]")
+                for p_name, task in task_items:
+                    title = str(task.get("title", "") or "").strip()
+                    due_raw = str(task.get("dueDate", "") or "").strip()
+                    
+                    due_info = ""
+                    if due_raw:
+                        dt = _parse_dida_datetime(due_raw)
+                        if dt:
+                            dt_local = dt.astimezone()
+                            if bool(task.get("isAllDay")):
+                                due_info = f" {dt_local.strftime('%m-%d')}"
+                            else:
+                                due_info = f" {dt_local.strftime('%m-%d %H:%M')}"
+                    
+                    line = f"{title}"
+                    if due_info:
+                        line += f" {due_info}"
+                    output_parts.append(line)
+                output_parts.append("") # Empty line between groups
 
-            all_tasks.sort(key=lambda item: _sort_key(item[1]))
-            display_tasks = all_tasks[:max_items]
-
-            if not display_tasks:
-                return {"ok": True, "message": "暂无未完成任务。", "data": {"count": 0}}
-
-            lines = []
-            for p_name, task in display_tasks:
-                title = str(task.get("title", "") or "").strip()
-                due_raw = str(task.get("dueDate", "") or "").strip()
-                due_info = ""
-                if due_raw:
-                    dt = _parse_dida_datetime(due_raw)
-                    if dt:
-                        # Convert to local time for display
-                        dt_local = dt.astimezone()
-                        is_all_day = bool(task.get("isAllDay"))
-                        if is_all_day:
-                            due_info = f" | {dt_local.strftime('%m-%d')}"
-                        else:
-                            due_info = f" | {dt_local.strftime('%m-%d %H:%M')}"
-                project_info = f" | {p_name}" if p_name else ""
-                lines.append(f"- {title}{due_info}{project_info}")
-
-            output_parts.append("\n".join(lines))
-            return {"ok": True, "message": "\n".join(output_parts), "data": {"count": total_tasks_count}}
+            return {"ok": True, "message": "\n".join(output_parts).strip(), "data": {"count": total_tasks_count}}
 
         if action_type in {"delete", "complete"}:
             task_id = str(getattr(action, "task_id", "") or "").strip()
