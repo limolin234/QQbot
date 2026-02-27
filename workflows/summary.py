@@ -62,6 +62,13 @@ SUMMARY_CURSOR_PATH = "data/summary_cursor.json"
 
 SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
 
+cfg_user_ids = SUMMARY_AGENT_CONFIG.get("user_ids") or []
+if not isinstance(cfg_user_ids, list):
+    cfg_user_ids = [cfg_user_ids]  # 兼容配置里只写了单个值的情况
+
+user_ids = [str(QQnumber)] + [str(x) for x in cfg_user_ids if x is not None]
+
+user_ids = list(dict.fromkeys(user_ids))
 
 try:
     DEFAULT_MAX_LINE_CHARS = int(SUMMARY_AGENT_CONFIG.get("max_line_chars", 300))
@@ -899,12 +906,12 @@ def get_summary_send_mode() -> str:
 
 
 async def private_entrance(msg: PrivateMessage) -> None:
-    if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
-        await daily_summary(run_mode="manual")
+    if msg.user_id in user_ids and msg.raw_message.strip() == "/summary":
+        await daily_summary(run_mode="manual",user_id=msg.user_id)
         await bot.api.post_private_msg(msg.user_id, text="Starting...")
 
 
-async def _execute_daily_summary(run_mode: str = "manual") -> None:
+async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumber ) -> None:
     file_path = LOG_FILE_PATH
     chunk_size = 10000
     print(f"开始读取日志: {file_path}")
@@ -962,17 +969,34 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
         )
 
         send_mode = get_summary_send_mode()
-        if send_mode == "multi_message":
-            sent_count = 0
-            for message_text in format_grouped_summary_messages(grouped_result):
-                await bot.api.post_private_msg(QQnumber, text=message_text)
-                sent_count += 1
-        else:
-            text = format_grouped_summary_message(grouped_result)
-            sent_count = 0
-            if text:
-                await bot.api.post_private_msg(QQnumber, text=text)
-                sent_count = 1
+        if run_mode == "manual":
+            if send_mode == "multi_message":
+                sent_count = 0
+                for message_text in format_grouped_summary_messages(grouped_result):
+                    await bot.api.post_private_msg(user_id, text=message_text)
+                    sent_count += 1
+            else:
+                text = format_grouped_summary_message(grouped_result)
+                sent_count = 0
+                if text:
+                    await bot.api.post_private_msg(user_id, text=text)
+                    sent_count = 1
+        elif run_mode == "auto":
+            for uid in user_ids:
+                try:
+                    if send_mode == "multi_message":
+                        for message_text in format_grouped_summary_messages(grouped_result):
+                            await bot.api.post_private_msg(uid, text=message_text)
+                            sent_count += 1
+                    else:
+                        text = format_grouped_summary_message(grouped_result)
+                        if text:
+                            await bot.api.post_private_msg(uid, text=text)
+                            sent_count += 1
+
+                    sent_users += 1
+                except Exception:
+                    pass
 
         elapsed_ms = (perf_counter() - started) * 1000
         log_event(
@@ -1005,8 +1029,8 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
         print(f"处理日志时出错: {error}")
 
 
-async def daily_summary(run_mode: str = "manual") -> None:
-    task = asyncio.create_task(_execute_daily_summary(run_mode=run_mode))
+async def daily_summary(run_mode: str = "manual", user_id: str = QQnumber) -> None:
+    task = asyncio.create_task(_execute_daily_summary(run_mode=run_mode, user_id=user_id))
 
     def _on_done(done_task: asyncio.Task) -> None:
         try:
