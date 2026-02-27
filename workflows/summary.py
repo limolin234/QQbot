@@ -62,14 +62,6 @@ SUMMARY_CURSOR_PATH = "data/summary_cursor.json"
 
 SUMMARY_AGENT_CONFIG = load_current_agent_config(__file__)
 
-_cfg_user_entries = SUMMARY_AGENT_CONFIG.get("user_ids") or []
-user_group_map: dict[str, list[str]] = {}
-for _entry in _cfg_user_entries:
-    if isinstance(_entry, dict):
-        _qq = str(_entry.get("qq", "")).strip()
-        _groups = [str(g).strip() for g in (_entry.get("groups") or []) if str(g).strip()]
-        if _qq:
-            user_group_map[_qq] = _groups
 
 try:
     DEFAULT_MAX_LINE_CHARS = int(SUMMARY_AGENT_CONFIG.get("max_line_chars", 300))
@@ -308,8 +300,6 @@ def build_summary_chunks_from_log_lines(
     *,
     chunk_size: int,
     run_mode: str,
-    caller_user_id: str = "",
-    allowed_groups: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """从日志原始行构建 summary chunks（解析+筛选+分块）。"""
     records: list[dict[str, str]] = []
@@ -326,7 +316,7 @@ def build_summary_chunks_from_log_lines(
             }
         )
 
-    filtered_records, meta = filter_records_for_summary(records, run_mode=run_mode, user_id=caller_user_id, allowed_groups=allowed_groups)
+    filtered_records, meta = filter_records_for_summary(records, run_mode=run_mode)
     if not filtered_records:
         return [], meta
 
@@ -388,13 +378,19 @@ def filter_records_for_summary(
     records: list[dict[str, str]],
     *,
     run_mode: str,
-    user_id: str = "",
-    allowed_groups: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, str]]:
     """按 chat scope + cursor 筛选日志记录。"""
     scope = _normalize_scope(str(SUMMARY_AGENT_CONFIG.get("summary_chat_scope") or "group"))
-    group_id_set: set[str] = set(allowed_groups) if allowed_groups is not None else set()
-    cursor_key = f"manual_{scope}_{user_id}" if user_id else f"manual_{scope}"
+    group_filter_mode = _normalize_group_filter_mode(
+        str(SUMMARY_AGENT_CONFIG.get("summary_group_filter_mode") or "all")
+    )
+    configured_group_ids = SUMMARY_AGENT_CONFIG.get("summary_group_ids")
+    group_id_set = {
+        str(item).strip()
+        for item in (configured_group_ids if isinstance(configured_group_ids, list) else [])
+        if str(item).strip()
+    }
+    cursor_key = f"manual_{scope}"
     cursor_before = ""
     normalized_run_mode = str(run_mode or "manual").strip().lower()
     if normalized_run_mode not in {"manual", "auto"}:
@@ -416,8 +412,11 @@ def filter_records_for_summary(
             continue
 
         group_id = str(record.get("group_id", UNKNOWN_GROUP)).strip() or UNKNOWN_GROUP
-        if chat_type == "group" and group_id not in group_id_set:
-            continue
+        if chat_type == "group" and group_id_set:
+            if group_filter_mode == "include" and group_id not in group_id_set:
+                continue
+            if group_filter_mode == "exclude" and group_id in group_id_set:
+                continue
 
         ts = str(record.get("ts", "")).strip()
         current_dt = _parse_iso_dt(ts)
@@ -900,15 +899,12 @@ def get_summary_send_mode() -> str:
 
 
 async def private_entrance(msg: PrivateMessage) -> None:
-    if msg.user_id in user_group_map and msg.raw_message.strip() == "/summary":
-        if not user_group_map.get(msg.user_id):
-            await bot.api.post_private_msg(msg.user_id, text="你没有被授权汇总任何群。")
-            return
-        await daily_summary(run_mode="manual", user_id=msg.user_id)
+    if msg.user_id == QQnumber and msg.raw_message.strip() == "/summary":
+        await daily_summary(run_mode="manual")
         await bot.api.post_private_msg(msg.user_id, text="Starting...")
 
 
-async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumber ) -> None:
+async def _execute_daily_summary(run_mode: str = "manual") -> None:
     file_path = LOG_FILE_PATH
     chunk_size = 10000
     print(f"开始读取日志: {file_path}")
@@ -922,14 +918,10 @@ async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumb
                 print("没有日志需要处理")
                 return
 
-        allowed_groups = user_group_map.get(user_id, [])
-
         group_jobs, meta = build_summary_chunks_from_log_lines(
             raw_lines,
             chunk_size=chunk_size,
             run_mode=run_mode,
-            caller_user_id=user_id if run_mode == "manual" else "",
-            allowed_groups=allowed_groups,
         )
         if not group_jobs:
             print(
@@ -973,13 +965,13 @@ async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumb
         if send_mode == "multi_message":
             sent_count = 0
             for message_text in format_grouped_summary_messages(grouped_result):
-                await bot.api.post_private_msg(user_id, text=message_text)
+                await bot.api.post_private_msg(QQnumber, text=message_text)
                 sent_count += 1
         else:
             text = format_grouped_summary_message(grouped_result)
             sent_count = 0
             if text:
-                await bot.api.post_private_msg(user_id, text=text)
+                await bot.api.post_private_msg(QQnumber, text=text)
                 sent_count = 1
 
         elapsed_ms = (perf_counter() - started) * 1000
@@ -1013,18 +1005,16 @@ async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumb
         print(f"处理日志时出错: {error}")
 
 
-async def daily_summary(run_mode: str = "manual", user_id: str = QQnumber) -> None:
-    targets = list(user_group_map.keys()) if run_mode == "auto" else [user_id]
-    for uid in targets:
-        task = asyncio.create_task(_execute_daily_summary(run_mode=run_mode, user_id=uid))
+async def daily_summary(run_mode: str = "manual") -> None:
+    task = asyncio.create_task(_execute_daily_summary(run_mode=run_mode))
 
-        def _on_done(done_task: asyncio.Task) -> None:
-            try:
-                done_task.result()
-            except Exception as error:
-                print(f"[SUMMARY-ASYNC-ERROR] mode={run_mode} error={error}")
+    def _on_done(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception as error:
+            print(f"[SUMMARY-ASYNC-ERROR] mode={run_mode} error={error}")
 
-        task.add_done_callback(_on_done)
+    task.add_done_callback(_on_done)
 
 
 def _build_summary_graph(*, model_name: str | None, temperature: float):
@@ -1385,6 +1375,13 @@ def _normalize_scope(scope: str) -> str:
     if value in {"group", "private", "all"}:
         return value
     return "group"
+
+
+def _normalize_group_filter_mode(mode: str) -> str:
+    value = str(mode or "").strip().lower()
+    if value in {"all", "include", "exclude"}:
+        return value
+    return "all"
 
 
 def _parse_iso_dt(ts: str | None) -> datetime | None:
