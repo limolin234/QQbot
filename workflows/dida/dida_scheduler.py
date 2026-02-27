@@ -515,7 +515,7 @@ class DidaScheduler:
             if not total_tasks_count:
                 return {"ok": True, "message": f"[CQ:at,qq={user_key}] 暂无未完成任务。", "data": {"count": 0}}
 
-            output_parts = [f"[CQ:at,qq={user_key}]\n 的任务清单 (共 {total_tasks_count} 项)"]
+            output_parts = [f"[CQ:at,qq={user_key}] 的任务清单 (共 {total_tasks_count} 项)"]
             output_parts.append("-" * 15)
 
             for group_name in ["已过期", "今天", "明天", "以后", "无日期"]:
