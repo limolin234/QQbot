@@ -584,6 +584,13 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
                      run_in_thread=True
                  )
                  reply_text = reply_res.reply_text
+                 
+                 # Append execution result message if available (for fixed format output)
+                 if execution_result and isinstance(execution_result, dict):
+                     dida_msg = str(execution_result.get("message", "") or "").strip()
+                     if dida_msg:
+                         reply_text = f"{reply_text}\n{dida_msg}".strip()
+
              except Exception as reply_error:
                  reply_text = f"（生成回复失败：{reply_error}）"
                  if execution_result:
