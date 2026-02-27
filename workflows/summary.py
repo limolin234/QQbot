@@ -365,9 +365,6 @@ def build_summary_chunks_from_log_lines(
         )
         merged_chunk_total += len(merged_chunks)
 
-    if meta.get("run_mode") == "manual" and meta.get("cursor_key") and meta.get("cursor_after"):
-        save_summary_cursor(str(meta["cursor_key"]), str(meta["cursor_after"]))
-
     meta["group_count"] = str(len(group_jobs))
     meta["group_chunks"] = str(sum(len(chunks) for chunks in grouped_chunks_by_group.values()))
     meta["final_chunks"] = str(merged_chunk_total)
@@ -999,6 +996,9 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
                 await bot.api.post_private_msg(QQnumber, text=text)
                 sent_count = 1
 
+        if meta.get("run_mode") == "manual" and meta.get("cursor_key") and meta.get("cursor_after"):
+            save_summary_cursor(str(meta["cursor_key"]), str(meta["cursor_after"]))
+
         elapsed_ms = (perf_counter() - started) * 1000
         log_event(
             stage="end",
@@ -1028,6 +1028,7 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
         print("日志处理完成")
     except Exception as error:
         print(f"处理日志时出错: {error}")
+        await bot.api.post_private_msg(QQnumber, text=f"日报处理异常: {error}")
 
 
 async def daily_summary(run_mode: str = "manual") -> None:
