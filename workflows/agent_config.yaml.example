@@ -25,6 +25,9 @@ summary_config:
     # summary_chat_scope：配置需要总结消息的范围
     # 可选值：group(仅总结群聊消息) / private(仅私聊) / all(群聊+私聊)
 
+    # user_ids: ["114514","1919810"]
+    # 除了root_id之外 其他summary使用者的qqid 统一定期推送 可单独使用 "/summary"
+
     summary_group_filter_mode: include
     # summary_group_filter_mode：群号过滤模式（仅对 group 生效）
     # all: 不按群号过滤（默认，汇总全部群）
