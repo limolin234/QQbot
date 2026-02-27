@@ -604,6 +604,12 @@ def run_summary_graph(
     final_result.elapsed_ms = (perf_counter() - workflow_started_at) * 1000
     return final_result
 
+async def send_error_msg(text: str) -> None:
+    """辅助异步发送错误消息给QQnumber。"""
+    try:
+        await bot.api.post_private_msg(QQnumber, text=text)
+    except Exception as e:
+        print(f"[ERROR] 发送错误消息失败: {e}")
 
 def run_grouped_summary_graph(
     group_jobs: list[dict[str, Any]],
@@ -638,14 +644,33 @@ def run_grouped_summary_graph(
 
         chunk_results: list[SummaryFinalResult] = []
         for chunk_index, chunk_text in enumerate(chunk_texts, start=1):
-            chunk_results.append(
-                run_summary_graph(
-                    chunk_text,
-                    chunk_index=chunk_index,
-                    model_name=model_name,
-                    temperature=temperature,
-                )
-            )
+                    try:
+                        # 调用run_summary_graph，捕获异常
+                        result = run_summary_graph(
+                            chunk_text,
+                            chunk_index=chunk_index,
+                            model_name=model_name,
+                            temperature=temperature,
+                        )
+                    except Exception as ex:
+                        error_text = f"Summary出错，群:{group_id}，块#{chunk_index}，原因: {ex}"
+                        print(error_text)
+                        # 异步发送错误通知（适当调整调用地点和逻辑，确保事件循环正确）
+                        asyncio.create_task(send_error_msg(error_text))
+                        # 返回空的默认结果，防止跳过
+                        result = SummaryFinalResult(
+                            date=datetime.now().strftime("%Y-%m-%d"),
+                            overview="今日暂无可总结内容。",
+                            highlights=[],
+                            risks=[],
+                            todos=[],
+                            chunk_count=1,
+                            message_count=0,
+                            sources=[],
+                            trace_lines=[],
+                            map_results=[],
+                        )
+                    chunk_results.append(result)
 
         merged_sources: list[str] = []
         merged_trace_lines: list[str] = []
