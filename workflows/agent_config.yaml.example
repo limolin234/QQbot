@@ -21,19 +21,20 @@ summary_config:
     max_lines: 500
     temperature: 0.2
     
-    summary_chat_scope: group    
+    summary_chat_scope: group
     # summary_chat_scope：配置需要总结消息的范围
     # 可选值：group(仅总结群聊消息) / private(仅私聊) / all(群聊+私聊)
 
-    summary_group_filter_mode: include
-    # summary_group_filter_mode：群号过滤模式（仅对 group 生效）
-    # all: 不按群号过滤（默认，汇总全部群）
-    # include: 仅汇总 summary_group_ids 列表中的群
-    # exclude: 排除 summary_group_ids 列表中的群
-
-    summary_group_ids: ["114514", "1919810"]
-    # summary_group_ids：群号列表，配合 summary_group_filter_mode 使用
-    # 元素为字符串
+    user_ids:
+      - qq: "10001"
+        groups:
+          - "114514"
+          - "1919810"
+      - qq: "10002"
+        groups:
+          - "114514"
+    # user_ids：允许使用 /summary 的 QQ 号及其可汇总的群号
+    # groups 为空列表（groups: []）时，该用户不能汇总任何群
 
     summary_global_overview: true
     # summary_global_overview：是否在“各群摘要”之上再做一次全局总览（会增加一次 LLM 调用）
