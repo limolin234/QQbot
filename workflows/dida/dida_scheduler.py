@@ -183,8 +183,7 @@ class DidaScheduler:
         access_token: str,
         service: DidaService,
         *,
-        task_id: str | None = None,
-        title: str | None = None,
+        task_id: str,
         project_id: str | None = None,
     ) -> tuple[dict[str, Any] | None, str | None]:
         if project_id:
@@ -215,12 +214,8 @@ class DidaScheduler:
             
             for task in project_tasks:
                 tid = str(task.get("id", "") or "").strip()
-                ttitle = str(task.get("title", "") or "").strip()
                 
-                if task_id and tid == task_id:
-                    return task, pid
-                
-                if not task_id and title and ttitle == title:
+                if tid == task_id:
                     return task, pid
                     
         return None, None
@@ -253,9 +248,28 @@ class DidaScheduler:
         user_id: str,
         user_name: str,
     ) -> str:
+        """Compatible wrapper for old string-based return."""
+        result = await self.execute_action_structured(
+            action=action,
+            chat_type=chat_type,
+            group_id=group_id,
+            user_id=user_id,
+            user_name=user_name
+        )
+        return result.get("message", "")
+
+    async def execute_action_structured(
+        self,
+        *,
+        action: Any,
+        chat_type: str,
+        group_id: str,
+        user_id: str,
+        user_name: str,
+    ) -> dict[str, Any]:
         service = self._get_service()
         if service is None:
-            return "⚠️ Dida 未配置，请先在 agent_config.yaml 中填写 client_id/client_secret/redirect_uri。"
+            return {"ok": False, "message": "⚠️ Dida 未配置，请先在 agent_config.yaml 中填写 client_id/client_secret/redirect_uri。"}
         user_key = str(user_id).strip()
         
         # Admin impersonation check
@@ -266,15 +280,15 @@ class DidaScheduler:
             if user_key in admin_qqs:
                 user_key = target_user_id
             else:
-                return f"⚠️ 权限不足：你不是管理员，无法操作用户 {target_user_id} 的任务。"
+                return {"ok": False, "message": f"⚠️ 权限不足：你不是管理员，无法操作用户 {target_user_id} 的任务。"}
                 
         tokens = self.load_tokens()
         token_data = tokens.get(user_key)
         if not isinstance(token_data, dict):
-            return "⚠️ 尚未绑定 Dida 账号，请先发送 /dida_auth 获取授权链接。"
+            return {"ok": False, "message": "⚠️ 尚未绑定 Dida 账号，请先发送 /dida_auth 获取授权链接。"}
         access_token = str(token_data.get("access_token") or "").strip()
         if not access_token:
-            return "⚠️ Dida 授权信息无效，请重新绑定 /dida_auth。"
+            return {"ok": False, "message": "⚠️ Dida 授权信息无效，请重新绑定 /dida_auth。"}
         project_id = str(getattr(action, "project_id", "") or "").strip()
         
         # Try to find project_id from context if missing and we have a task_id
@@ -295,15 +309,15 @@ class DidaScheduler:
             
             title = str(getattr(action, "title", "") or "").strip()
             if not title:
-                return "⚠️ 创建任务需要 title。"
+                return {"ok": False, "message": "⚠️ 创建任务需要 title。"}
             if not project_id:
-                return "⚠️ 未找到默认项目，请先在 Dida 中创建项目。"
+                return {"ok": False, "message": "⚠️ 未找到默认项目，请先在 Dida 中创建项目。"}
             content = str(getattr(action, "content", "") or "").strip()
             desc = str(getattr(action, "desc", "") or "").strip()
             due_date_raw = str(getattr(action, "due_date", "") or "").strip()
             due_date = _format_due_date(due_date_raw) if due_date_raw else None
             if due_date_raw and not due_date:
-                return "⚠️ due_date 格式不正确，请提供明确时间。"
+                return {"ok": False, "message": "⚠️ due_date 格式不正确，请提供明确时间。"}
             target_id = group_id if chat_type == "group" else user_id
             route = _route_tag(chat_type, str(target_id), user_id)
             content = f"{content}\n{route}".strip() if content else route
@@ -339,8 +353,8 @@ class DidaScheduler:
                         due_display = dt_local.strftime("%m-%d %H:%M")
 
             if due_display:
-                return f"✅ 已创建任务：{title} 📅 {due_display}"
-            return f"✅ 已创建任务：{title}"
+                return {"ok": True, "message": f"✅ 已创建任务：{title} 📅 {due_display}", "data": {"task_id": task_id, "title": title}}
+            return {"ok": True, "message": f"✅ 已创建任务：{title}", "data": {"task_id": task_id, "title": title}}
         if action_type == "update":
             target_task_id = str(getattr(action, "task_id", "") or "").strip()
             title = str(getattr(action, "title", "") or "").strip()
@@ -348,19 +362,18 @@ class DidaScheduler:
             due_date_raw = str(getattr(action, "due_date", "") or "").strip()
             due_date = _format_due_date(due_date_raw) if due_date_raw else None
 
-            if not target_task_id and not title:
-                 return "⚠️ 更新任务需要提供 task_id 或 title。"
+            if not target_task_id:
+                 return {"ok": False, "message": "⚠️ 更新任务必须提供 task_id。"}
 
             task_obj, pid = await self._find_task_obj(
                 access_token, 
                 service, 
                 task_id=target_task_id, 
-                title=title, 
                 project_id=project_id
             )
             
             if not task_obj or not pid:
-                return "⚠️ 未找到目标任务，请检查任务 ID 或标题。"
+                return {"ok": False, "message": "⚠️ 未找到目标任务，请检查任务 ID。"}
             
             payload = task_obj.copy()
             if title:
@@ -394,8 +407,8 @@ class DidaScheduler:
                         due_display = dt_local.strftime("%m-%d %H:%M")
 
             if due_display:
-                return f"✅ 已更新任务：{payload.get('title')} 📅 {due_display}"
-            return f"✅ 已更新任务：{payload.get('title')}"
+                return {"ok": True, "message": f"✅ 已更新任务：{payload.get('title')} 📅 {due_display}", "data": {"task_id": payload["id"]}}
+            return {"ok": True, "message": f"✅ 已更新任务：{payload.get('title')}", "data": {"task_id": payload["id"]}}
         if action_type == "list":
             # 如果用户未显式指定 project_id，则忽略默认项目，拉取所有项目
             raw_project_id = str(getattr(action, "project_id", "") or "").strip()
@@ -411,7 +424,7 @@ class DidaScheduler:
                     target_project_ids.append("inbox")
             
             if not target_project_ids:
-                return "⚠️ 未找到任何项目，请先在 Dida 中创建项目。"
+                return {"ok": False, "message": "⚠️ 未找到任何项目，请先在 Dida 中创建项目。"}
 
             self._log(f"fetch_tasks projects={len(target_project_ids)}")
             tasks_list = await asyncio.gather(
@@ -454,14 +467,16 @@ class DidaScheduler:
                         "id": t.get("id"),
                         "title": t.get("title"),
                         "project": p_name,
-                        "due": t.get("dueDate")
+                        "projectId": t.get("projectId"),
+                        "due": t.get("dueDate"),
+                        "isAllDay": t.get("isAllDay")
                     })
             self._save_task_context(user_key, all_tasks_for_context)
             
             self._log(f"fetch_tasks_done total={total_tasks_count}")
 
             if not total_tasks_count:
-                return "暂无未完成任务。"
+                return {"ok": True, "message": "暂无未完成任务。", "data": {"count": 0}}
 
             limit = getattr(action, "limit", None)
             max_items = int(limit) if isinstance(limit, int) and limit > 0 else 20
@@ -481,7 +496,7 @@ class DidaScheduler:
             display_tasks = all_tasks[:max_items]
 
             if not display_tasks:
-                return "暂无未完成任务。"
+                return {"ok": True, "message": "暂无未完成任务。", "data": {"count": 0}}
 
             lines = []
             for p_name, task in display_tasks:
@@ -502,25 +517,23 @@ class DidaScheduler:
                 lines.append(f"- {title}{due_info}{project_info}")
 
             output_parts.append("\n".join(lines))
-            return "\n".join(output_parts)
+            return {"ok": True, "message": "\n".join(output_parts), "data": {"count": total_tasks_count}}
 
         if action_type in {"delete", "complete"}:
             task_id = str(getattr(action, "task_id", "") or "").strip()
-            title = str(getattr(action, "title", "") or "").strip()
             
-            if not task_id and not title:
-                return "⚠️ 需要提供 task_id 或 title。"
+            if not task_id:
+                return {"ok": False, "message": "⚠️ 操作任务必须提供 task_id。"}
 
             task_obj, pid = await self._find_task_obj(
                 access_token, 
                 service, 
                 task_id=task_id, 
-                title=title,
                 project_id=project_id
             )
             
             if not task_obj or not pid:
-                return "⚠️ 未找到目标任务，请检查 task_id 或标题。"
+                return {"ok": False, "message": "⚠️ 未找到目标任务，请检查 task_id。"}
             
             target_task_id = task_obj["id"]
             target_project_id = str(task_obj.get("projectId") or pid).strip()
@@ -528,12 +541,12 @@ class DidaScheduler:
             if action_type == "delete":
                 await asyncio.to_thread(service.delete_task, access_token=access_token, project_id=target_project_id, task_id=target_task_id)
                 self._log(f"task_deleted user={user_key} project={target_project_id} task={target_task_id}")
-                return f"✅ 已删除任务：{task_obj.get('title', 'unknown')}"
+                return {"ok": True, "message": f"✅ 已删除任务：{task_obj.get('title', 'unknown')}", "data": {"task_id": target_task_id}}
             
             await asyncio.to_thread(service.complete_task, access_token=access_token, project_id=target_project_id, task_id=target_task_id)
             self._log(f"task_completed user={user_key} project={target_project_id} task={target_task_id}")
-            return f"✅ 已完成任务：{task_obj.get('title', 'unknown')}"
-        return "⚠️ 未识别的 Dida 操作。"
+            return {"ok": True, "message": f"✅ 已完成任务：{task_obj.get('title', 'unknown')}", "data": {"task_id": target_task_id}}
+        return {"ok": False, "message": "⚠️ 未识别的 Dida 操作。"}
 
     async def start(self) -> None:
         while True:
