@@ -1055,6 +1055,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
+            "max_tokens": 1024,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
@@ -1217,6 +1218,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
+            "max_tokens": 1024,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
@@ -1333,6 +1335,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
+            "max_tokens": 1024,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
