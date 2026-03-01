@@ -1225,11 +1225,7 @@ class DidaAgentDecisionEngine:
             llm_kwargs["openai_api_base"] = base_url
 
         llm_base = ChatOpenAI(**llm_kwargs)
-        try:
-            llm = llm_base.with_structured_output(ActionLLMResult)
-        except TypeError:
-            # Fallback if structured output not supported
-            llm = llm_base
+        llm = llm_base.with_structured_output(ActionLLMResult, include_raw=True)
 
         messages = [
             SystemMessage(content=prompt),
@@ -1256,9 +1252,21 @@ class DidaAgentDecisionEngine:
             except Exception as log_err:
                 print(f"[DIDA_DEBUG] generate_action output log failed: {log_err}")
 
+            if isinstance(result, dict):
+                parsed = result.get("parsed")
+                if parsed is not None:
+                    return parsed
+                raw_output = result.get("raw")
+                cleaned_text = _strip_markdown_code_fence(_content_to_text(getattr(raw_output, "content", raw_output)))
+                if cleaned_text:
+                    try:
+                        raw_obj = json.loads(cleaned_text)
+                        return ActionLLMResult.model_validate(raw_obj)
+                    except Exception:
+                        pass
+                return ActionLLMResult(dida_action=None, need_clarification=True, clarification_question="系统内部错误：模型输出解析失败")
             if isinstance(result, ActionLLMResult):
                 return result
-            # Handle raw AIMessage fallback if structured output failed silently
             return ActionLLMResult(dida_action=None, need_clarification=True, clarification_question="系统内部错误：模型输出解析失败")
         except Exception as e:
             print(f"[DIDA_AGENT-ACTION-ERROR] {e}")
@@ -1342,11 +1350,12 @@ class DidaAgentDecisionEngine:
             llm_kwargs["openai_api_base"] = base_url
 
         llm_base = ChatOpenAI(**llm_kwargs)
-        # Model B should output simple text usually, but we defined ReplyResponse
+        use_raw_fallback = True
         try:
-            llm = llm_base.with_structured_output(ReplyResponse)
+            llm = llm_base.with_structured_output(ReplyResponse, include_raw=True)
         except TypeError:
-            llm = llm_base
+            use_raw_fallback = False
+            llm = llm_base.with_structured_output(ReplyResponse)
 
         messages = [
             SystemMessage(content=prompt),
@@ -1373,6 +1382,16 @@ class DidaAgentDecisionEngine:
             except Exception as log_err:
                 print(f"[DIDA_DEBUG] generate_final_reply output log failed: {log_err}")
 
+            if use_raw_fallback and isinstance(result, dict):
+                parsed = result.get("parsed")
+                if parsed is not None:
+                    return parsed
+                raw_output = result.get("raw")
+                fallback_reply = _extract_reply_text_from_raw_output(raw_output)
+                if fallback_reply:
+                    return ReplyResponse(reply_text=fallback_reply)
+                return ReplyResponse(reply_text=_default_reply_when_parse_failed())
+
             if isinstance(result, ReplyResponse):
                 return result
             # Fallback
@@ -1381,6 +1400,14 @@ class DidaAgentDecisionEngine:
             return ReplyResponse(reply_text="（系统错误：无法生成回复）")
         except Exception as e:
             print(f"[DIDA_AGENT-REPLY-ERROR] {e}")
+            try:
+                print("[DIDA_DEBUG] generate_final_reply: structured output failed, trying raw invoke fallback...")
+                raw_result = llm_base.invoke(messages)
+                fallback_reply = _extract_reply_text_from_raw_output(raw_result)
+                if fallback_reply:
+                    return ReplyResponse(reply_text=fallback_reply)
+            except Exception:
+                pass
             return ReplyResponse(reply_text=f"（系统错误：{e}）")
 
     def generate_reply_text(
