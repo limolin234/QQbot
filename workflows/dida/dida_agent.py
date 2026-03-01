@@ -637,28 +637,33 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
                     "[DIDA_AGENT-SEND-ERROR] "
                     f"chat={chat_type} group={group_id} user={user_id} error={send_error}"
                 )
-        elif should_reply_flag:
+        if should_reply_flag:
             log_event(stage="send_skip", decision={"sent": False, "reason": "reply_text_empty"})
 
         print(
-            "[DIDA_AGENT] "
-            f"chat={chat_type} group={group_id} user={user_name}({user_id}) "
-            f"should_reply={should_reply_flag} "
-            f"reason={reason_text} reply_len={len(final_reply)}"
+            f"[DIDA_AGENT] chat={chat_type} group={group_id} user={user_name}({user_id})\n"
+            f"Input: {cleaned_message!r}\n"
+            f"should_reply={should_reply_flag}\n"
+            f"Reply: {final_reply!r}\n"
+            f"Reason: {reason_text}"
         )
     except asyncio.TimeoutError:
         elapsed_ms = (perf_counter() - started) * 1000
         log_event(stage="timeout", latency_ms=elapsed_ms, error="Request timed out")
         print(
-            "[DIDA_AGENT-ERROR] "
-            f"chat={chat_type} group={group_id} user={user_id} error=TimeoutError (request took > 120s)"
+            f"[DIDA_AGENT-ERROR] chat={chat_type} group={group_id} user={user_id}\n"
+            f"Input: {cleaned_message!r}\n"
+            "error=TimeoutError (request took > 120s)"
         )
     except Exception as error:
         elapsed_ms = (perf_counter() - started) * 1000
         log_event(stage="error", latency_ms=elapsed_ms, error=str(error))
+        import traceback
+        traceback.print_exc()
         print(
-            "[DIDA_AGENT-ERROR] "
-            f"chat={chat_type} group={group_id} user={user_id} error={repr(error)}"
+            f"[DIDA_AGENT-ERROR] chat={chat_type} group={group_id} user={user_id}\n"
+            f"Input: {cleaned_message!r}\n"
+            f"error={repr(error)}"
         )
 
 
@@ -1229,8 +1234,26 @@ class DidaAgentDecisionEngine:
             HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
         ]
         
+        print(f"[DIDA_DEBUG] generate_action: invoking LLM. model={model_name} run_id={context.run_id}")
         try:
+            print(f"[DIDA_DEBUG] generate_action input (preview): {json.dumps(llm_input, ensure_ascii=False)[:1000]}")
+        except Exception:
+            pass
+
+        try:
+            t0 = perf_counter()
             result = llm.invoke(messages)
+            t1 = perf_counter()
+            print(f"[DIDA_DEBUG] generate_action: LLM returned. cost={t1-t0:.3f}s run_id={context.run_id}")
+            
+            try:
+                if hasattr(result, "model_dump_json"):
+                    print(f"[DIDA_DEBUG] generate_action output: {result.model_dump_json(ensure_ascii=False)}")
+                else:
+                    print(f"[DIDA_DEBUG] generate_action output (raw): {result}")
+            except Exception as log_err:
+                print(f"[DIDA_DEBUG] generate_action output log failed: {log_err}")
+
             if isinstance(result, ActionLLMResult):
                 return result
             # Handle raw AIMessage fallback if structured output failed silently
@@ -1327,8 +1350,26 @@ class DidaAgentDecisionEngine:
             HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
         ]
         
+        print(f"[DIDA_DEBUG] generate_final_reply: invoking LLM. model={model_name} run_id={context.run_id}")
         try:
+            print(f"[DIDA_DEBUG] generate_final_reply input (preview): {json.dumps(llm_input, ensure_ascii=False)[:1000]}")
+        except Exception:
+            pass
+        
+        try:
+            t0 = perf_counter()
             result = llm.invoke(messages)
+            t1 = perf_counter()
+            print(f"[DIDA_DEBUG] generate_final_reply: LLM returned. cost={t1-t0:.3f}s run_id={context.run_id}")
+            
+            try:
+                if hasattr(result, "model_dump_json"):
+                    print(f"[DIDA_DEBUG] generate_final_reply output: {result.model_dump_json(ensure_ascii=False)}")
+                else:
+                    print(f"[DIDA_DEBUG] generate_final_reply output (raw): {result}")
+            except Exception as log_err:
+                print(f"[DIDA_DEBUG] generate_final_reply output log failed: {log_err}")
+
             if isinstance(result, ReplyResponse):
                 return result
             # Fallback
@@ -1622,9 +1663,16 @@ def run_dida_agent_pipeline(
         },
     )
 
+    # Performance checkpoint
+    t0 = perf_counter()
+    print(f"[DIDA_DEBUG] run_dida_agent_pipeline start check. run_id={run_id}")
+
     # 先判断是否要回复
     engine = DidaAgentDecisionEngine(DIDA_AGENT_CONFIG)
     result = engine.should_reply(context)
+    
+    t1 = perf_counter()
+    print(f"[DIDA_DEBUG] should_reply finished. cost={t1-t0:.3f}s result={bool(result.get('should_reply'))} run_id={run_id}")
 
     # 然后生成具体的回复内容文本
     reply_payload: dict[str, Any] = {"reply_text": "", "dida_action": None}
@@ -1637,7 +1685,11 @@ def run_dida_agent_pipeline(
         if is_new_mode:
              # Model A (Action LLM)
              try:
+                 print(f"[DIDA_DEBUG] generate_action start. run_id={run_id}")
                  action_res = engine.generate_action(action_prompt=action_prompt, context=context, rule=rule)
+                 t2 = perf_counter()
+                 print(f"[DIDA_DEBUG] generate_action finished. cost={t2-t1:.3f}s run_id={run_id}")
+                 
                  return {
                      "should_reply": True,
                      "reason": str(result.get("reason", "")),
@@ -1654,6 +1706,9 @@ def run_dida_agent_pipeline(
                  }
              except Exception as error:
                  context_event(stage="action_generate_error", error=str(error))
+                 print(f"[DIDA_AGENT-ERROR] generate_action failed: {error}")
+                 import traceback
+                 traceback.print_exc()
                  return {
                      "should_reply": False, 
                      "reason": f"action_error: {error}",
