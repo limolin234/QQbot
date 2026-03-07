@@ -39,7 +39,7 @@
     PreProcess --> CheckAllowed{是否在<br/>allowed_id群组?}
     
     CheckAllowed -->|否| Discard([丢弃消息])
-    CheckAllowed -->|是| WriteLog[写入message.jsonl(JSONL)]
+    CheckAllowed -->|是| WriteLog(["写入message.jsonl(JSONL)"])
     
     WriteLog --> MatchKeyword{关键词匹配}
     
@@ -108,3 +108,4 @@ handle_task接收task
 ## 安全问题
 
 只有 URGENT 类接龙任务 存在群发 所以建议在局部添加限制 避免把相关代码引入到其他用不到的文件中形成屎山
+
