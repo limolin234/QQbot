@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from agent_pool import submit_agent_job
 from bot import bot
 from ..agent_observe import bind_agent_event, generate_run_id
-from ..agent_config_loader import load_current_agent_config
+from ..agent_config_loader import load_current_agent_config, get_model_name
 from .dida_scheduler import dida_scheduler
 
 try:
@@ -1034,7 +1034,7 @@ class DidaAgentDecisionEngine:
         if not prompt:
             return False, "缺少 ai_decision_prompt"
 
-        model_name = str(rule.get("decision_model") or rule.get("model") or self.model)
+        model_name = get_model_name(self.config, stage="decision", rule=rule)
 
         if load_dotenv is not None:
             load_dotenv(override=False)
@@ -1194,7 +1194,7 @@ class DidaAgentDecisionEngine:
         }
 
         # Model selection
-        model_name = str(rule.get("action_model") or rule.get("model") or self.model) if rule else self.model
+        model_name = get_model_name(self.config, stage="model", rule=rule)
         
         if load_dotenv is not None:
             load_dotenv(override=False)
@@ -1320,7 +1320,7 @@ class DidaAgentDecisionEngine:
             }
 
         # Model selection
-        model_name = str(rule.get("reply_model") or rule.get("model") or self.model) if rule else self.model
+        model_name = get_model_name(self.config, stage="model", rule=rule)
         
         if load_dotenv is not None:
             load_dotenv(override=False)

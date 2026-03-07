@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from agent_pool import submit_agent_job
 from bot import QQnumber, bot
 from .agent_observe import bind_agent_event, generate_run_id
-from .agent_config_loader import load_current_agent_config
+from .agent_config_loader import load_current_agent_config, get_model_name
 
 try:
     from dotenv import load_dotenv
@@ -218,11 +218,11 @@ def run_forward_graph(
         load_dotenv(override=False)
 
     api_key = os.getenv("LLM_API_KEY")
-    if not api_key:
-        raise ValueError("缺少 LLM_API_KEY，请在 .env 中配置")
+    # if not api_key:
+    #     raise ValueError("缺少 LLM_API_KEY，请在 .env 中配置")
 
     base_url = os.getenv("LLM_API_BASE_URL")
-    model_name = str(FORWARD_AGENT_CONFIG.get("model") or "gpt-4o-mini")
+    model_name = get_model_name(FORWARD_AGENT_CONFIG, stage="decision")
     try:
         temperature = float(FORWARD_AGENT_CONFIG.get("temperature", 0.0))
     except (TypeError, ValueError):

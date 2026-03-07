@@ -126,3 +126,53 @@ def check_config(segment_name: str, config_dir: str) -> bool:
     _cache[cache_key] = False
     return False
 
+
+def get_model_name(
+    config: dict[str, Any],
+    stage: str | None = None,
+    rule: dict[str, Any] | None = None,
+) -> str:
+    """
+    Resolve model name based on priority:
+    1. rule.decision_model (if stage='decision')
+    2. config.decision_model (if stage='decision')
+    3. rule.model
+    4. config.model
+    
+    If stage != 'decision', we always fall back to 'model' (unless rule.model overrides).
+    We do NOT support 'process_model' or 'reply_model' anymore.
+    """
+    # Base fallback
+    default_model = str(config.get("model") or "").strip()
+    
+    # 1. Rule Level (Decision Override)
+    if stage == "decision" and rule and isinstance(rule, dict):
+        rule_decision_model = str(rule.get("decision_model") or "").strip()
+        if rule_decision_model:
+            return rule_decision_model
+
+    # 2. Config Level (Decision Override)
+    if stage == "decision":
+        config_decision_model = str(config.get("decision_model") or "").strip()
+        if config_decision_model:
+            return config_decision_model
+
+    # 3. Rule Level (Main Model)
+    if rule and isinstance(rule, dict):
+        rule_model = str(rule.get("model") or "").strip()
+        if rule_model:
+            return rule_model
+
+    # 4. Config Level (Main Model)
+    if default_model:
+        return default_model
+    
+    # Error Handling for Missing Main Model
+    if stage != "decision":
+        # If we need a main model (not decision) and none is found, we should warn or error.
+        # However, to keep backward compatibility and robustness, we fallback to a hardcoded default
+        # but print a warning to the console.
+        print(f"[WARNING] Agent config missing 'model' field. Falling back to 'gpt-4o-mini' for stage='{stage}'.")
+
+    return "gpt-4o-mini"  # Ultimate fallback
+
