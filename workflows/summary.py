@@ -46,7 +46,7 @@ from pydantic import BaseModel, Field
 from agent_pool import submit_agent_job
 from bot import QQnumber, bot
 from .agent_observe import bind_agent_event, generate_run_id
-from .agent_config_loader import load_current_agent_config
+from .agent_config_loader import load_current_agent_config, get_model_name
 from .message_observe import LOG_FILE_PATH, FILE_LOCK
 
 try:
@@ -975,9 +975,11 @@ async def _execute_daily_summary(run_mode: str = "manual") -> None:
             },
         )
 
+        process_model = get_model_name(SUMMARY_AGENT_CONFIG, stage="model")
         grouped_result = await submit_agent_job(
             run_grouped_summary_graph,
             group_jobs,
+            model_name=process_model,
             priority=6,
             timeout=180.0,
             run_in_thread=True,

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from agent_pool import submit_agent_job
 from bot import bot
 from workflows.agent_observe import bind_agent_event, generate_run_id
-from workflows.agent_config_loader import load_current_agent_config
+from workflows.agent_config_loader import load_current_agent_config, get_model_name
 
 try:
     from dotenv import load_dotenv
@@ -876,7 +876,7 @@ class AutoReplyDecisionEngine:
         if not prompt:
             return False, "缺少 ai_decision_prompt"
 
-        model_name = str(rule.get("decision_model") or rule.get("model") or self.model)
+        model_name = get_model_name(self.config, stage="decision", rule=rule)
 
         if load_dotenv is not None:
             load_dotenv(override=False)
@@ -982,7 +982,7 @@ class AutoReplyDecisionEngine:
         if not prompt:
             return ""
 
-        model_name = str(rule.get("reply_model") or rule.get("model") or self.model) if rule else self.model
+        model_name = get_model_name(self.config, stage="model", rule=rule)
 
         if load_dotenv is not None:
             load_dotenv(override=False)
