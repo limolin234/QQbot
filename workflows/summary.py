@@ -46,8 +46,10 @@ from pydantic import BaseModel, Field
 from agent_pool import submit_agent_job
 from bot import QQnumber, bot
 from .agent_observe import bind_agent_event, generate_run_id
-from .agent_config_loader import load_current_agent_config, get_model_name
+from .agent_config_loader import load_current_agent_config, get_model_name, is_scheduler_enabled
 from .message_observe import LOG_FILE_PATH, FILE_LOCK
+from .scheduler.registry import action_registry
+
 
 try:
     from dotenv import load_dotenv
@@ -293,7 +295,13 @@ class SummaryGraphState(TypedDict):
     final_result: SummaryFinalResult | None
 
 async def start_up():
-    aiocron.crontab('0 22 * * *', func=lambda: daily_summary(run_mode="auto"))
+    if not is_scheduler_enabled():
+        print("[SUMMARY] Scheduler disabled (legacy mode), starting internal cron...")
+        aiocron.crontab('0 22 * * *', func=lambda: daily_summary(run_mode="auto"))
+    else:
+        print("[SUMMARY] Scheduler enabled, skipping internal cron.")
+        # Register action
+        action_registry.register("summary.daily_report", daily_summary)
 
 def build_summary_chunks_from_log_lines(
     lines: list[str],

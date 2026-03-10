@@ -8,8 +8,9 @@ from typing import Any
 from ncatbot.core import GroupMessage, PrivateMessage
 
 from bot import bot
-from ..agent_config_loader import load_current_agent_config
+from ..agent_config_loader import load_current_agent_config, is_scheduler_enabled
 from .dida_service import DidaService
+from ..scheduler.registry import action_registry
 
 
 def _now() -> datetime:
@@ -579,6 +580,14 @@ class DidaScheduler:
         return {"ok": False, "message": "⚠️ 未识别的 Dida 操作。"}
 
     async def start(self) -> None:
+        if is_scheduler_enabled():
+            print("[DIDA] Scheduler enabled, skipping internal loop.")
+            # Register actions
+            action_registry.register("dida.poll", self.poll_action)
+            # Future: register push_task_list
+            return
+
+        print("[DIDA] Scheduler disabled (legacy mode), starting internal loop...")
         while True:
             config = self._get_runtime_config()
             try:
@@ -586,6 +595,15 @@ class DidaScheduler:
             except Exception as error:
                 print(f"[DidaScheduler] error={error}")
             await asyncio.sleep(config["poll_interval_seconds"])
+
+    async def poll_action(self, project_ids: list[str] = None) -> None:
+        """Wrapper for scheduler to call poll_once with overridden config."""
+        config = self._get_runtime_config()
+        if project_ids:
+            # Override project_ids if provided (though current implementation mainly uses config)
+            # If project_ids contains "all", we might want to respect that logic
+            pass
+        await self.poll_once(config)
 
     async def poll_once(self, config: dict[str, Any]) -> None:
         service = self._get_service()

@@ -4,6 +4,9 @@ from workflows.agent_config_loader import check_config
 from bot import bot
 from workflows import message_observe, agent_observe
 from workflows import summary, auto_reply, forward, dida
+from workflows.scheduler import SchedulerManager
+
+scheduler_manager = SchedulerManager()
 
 @bot.private_event()# type: ignore
 async def on_private_message(msg: PrivateMessage):
@@ -37,5 +40,8 @@ async def on_startup(*args):
         await auto_reply.start_up()
     if check_config("dida_agent_config","./workflows"):
         await dida.start_up()
+    
+    # Initialize Unified Scheduler
+    await scheduler_manager.start()
 
 bot.run()
