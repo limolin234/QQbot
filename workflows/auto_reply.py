@@ -22,7 +22,7 @@ from agent_pool import submit_agent_job
 from bot import bot
 from workflows.agent_observe import bind_agent_event, generate_run_id
 from workflows.agent_config_loader import load_current_agent_config, get_model_name
-from workflows.message_observe import PHYSICAL_FILE_LOCK
+from workflows.message_observe import PHYSICAL_FILE_LOCK, load_recent_context_messages
 
 try:
     from dotenv import load_dotenv
@@ -69,22 +69,7 @@ def get_auto_reply_runtime_config() -> dict[str, Any]:
     }
 
 
-def _parse_timestamp_to_epoch_seconds(ts_text: str) -> float | None:
-    text = str(ts_text).strip()
-    if not text:
-        return None
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        pass
-    iso_text = text.replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(iso_text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.timestamp()
+
 
 
 def get_auto_reply_monitor_numbers(chat_type: str = "group") -> set[str]:
@@ -597,80 +582,7 @@ async def entrance(
     )
 
 
-def load_recent_context_messages(
-    *,
-    chat_type: str,
-    group_id: str,
-    user_id: str,
-    current_ts: str,
-    current_cleaned_message: str,
-    limit: int,
-    max_chars: int,
-    window_seconds: int,
-    log_path: str = "message.jsonl",
-) -> list[str]:
-    """从 message.jsonl 读取最近上下文消息（按 chat_type + 会话范围）。"""
-    try:
-        with PHYSICAL_FILE_LOCK:
-            with open(log_path, "r", encoding="utf-8") as file:
-                raw_lines = [line.strip() for line in file if line.strip()]
-    except OSError:
-        return []
 
-    matched_records: list[tuple[str, str, str]] = []
-    target_chat_type = str(chat_type).strip().lower()
-    target_group = str(group_id)
-    target_user = str(user_id)
-    current_epoch = _parse_timestamp_to_epoch_seconds(current_ts)
-    window_enabled = bool(window_seconds > 0 and current_epoch is not None)
-    for raw_line in raw_lines:
-        try:
-            payload = json.loads(raw_line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-
-        payload_chat_type = str(payload.get("chat_type", "")).strip().lower()
-        if payload_chat_type != target_chat_type:
-            continue
-        if target_chat_type == "group" and str(payload.get("group_id", "")) != target_group:
-            continue
-        if target_chat_type == "private" and str(payload.get("user_id", "")) != target_user:
-            continue
-
-        cleaned_message = str(payload.get("cleaned_message", "")).strip()
-        if not cleaned_message:
-            continue
-        ts = str(payload.get("ts", ""))
-        if window_enabled:
-            payload_epoch = _parse_timestamp_to_epoch_seconds(ts)
-            if payload_epoch is not None and payload_epoch < (current_epoch - window_seconds):
-                continue
-        sender_name = str(payload.get("user_name", "")).strip() or str(payload.get("user_id", ""))
-        matched_records.append((ts, sender_name, cleaned_message))
-
-    context_lines: list[str] = []
-    total_chars = 0
-    skipped_current = False
-    for ts, sender_name, message_text in reversed(matched_records):
-        if (
-            not skipped_current
-            and str(ts) == str(current_ts)
-            and str(message_text) == str(current_cleaned_message)
-        ):
-            skipped_current = True
-            continue
-
-        line = f"[{ts}] {sender_name}: {message_text}" if ts else f"{sender_name}: {message_text}"
-        if total_chars + len(line) > max_chars:
-            break
-        context_lines.append(line)
-        total_chars += len(line)
-        if len(context_lines) >= limit:
-            break
-
-    return list(reversed(context_lines))
 
 
 @dataclass
