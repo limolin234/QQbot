@@ -1,10 +1,15 @@
 import asyncio
 import re, json
+import threading
+import shutil
+import os
 from datetime import datetime, timezone
 from ncatbot.core import PrivateMessage, GroupMessage
 
 LOG_FILE_PATH = "message.jsonl"
 FILE_LOCK = asyncio.Lock()
+# 添加物理文件锁，用于多线程环境下的文件访问互斥（解决 Windows 文件占用问题）
+PHYSICAL_FILE_LOCK = threading.Lock()
 MAX_LOG_LINES = 3000
 TRUNCATE_TO_LINES = 2000
 _line_counter = 0
@@ -31,8 +36,16 @@ def _truncate_log() -> None:
         tmp_path = LOG_FILE_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
-        import os
-        os.replace(tmp_path, LOG_FILE_PATH)
+        
+        # 使用锁保护重命名操作
+        with PHYSICAL_FILE_LOCK:
+            try:
+                # Docker bind mount 场景下不能使用 os.replace 覆盖原文件
+                # 必须使用 copy + truncate 的方式保留原文件 inode
+                shutil.copyfile(tmp_path, LOG_FILE_PATH)
+                os.remove(tmp_path)
+            except OSError:
+                pass  # 如果失败，下次再试，避免崩溃
 
 
 def clean_message(raw_message: str) -> str:
@@ -115,9 +128,10 @@ def _write_log(
         "cleaned_message": cleaned_message,
     }
 
-    with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        f.flush()
+    with PHYSICAL_FILE_LOCK:
+        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.flush()
 
     _line_counter += 1
     if _line_counter >= MAX_LOG_LINES:

@@ -22,6 +22,7 @@ from agent_pool import submit_agent_job
 from bot import bot
 from ..agent_observe import bind_agent_event, generate_run_id
 from ..agent_config_loader import load_current_agent_config, get_model_name
+from ..message_observe import PHYSICAL_FILE_LOCK
 from .dida_scheduler import dida_scheduler
 
 try:
@@ -726,8 +727,9 @@ def load_recent_context_messages(
 ) -> list[str]:
     """从 message.jsonl 读取最近上下文消息（按 chat_type + 会话范围）。"""
     try:
-        with open(log_path, "r", encoding="utf-8") as file:
-            raw_lines = [line.strip() for line in file if line.strip()]
+        with PHYSICAL_FILE_LOCK:
+            with open(log_path, "r", encoding="utf-8") as file:
+                raw_lines = [line.strip() for line in file if line.strip()]
     except OSError:
         return []
 
