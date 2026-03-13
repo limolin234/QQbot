@@ -86,6 +86,10 @@ def load_current_agent_config(module_file: str) -> dict[str, Any]:
     return {}
 
 
+def is_scheduler_enabled() -> bool:
+    """Check if scheduler is enabled in agent_config.yaml."""
+    return check_config("scheduler_manager", os.path.dirname(__file__))
+
 _cache: Dict[Tuple[str, str], bool] = {}
 
 def check_config(segment_name: str, config_dir: str) -> bool:
