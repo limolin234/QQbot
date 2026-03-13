@@ -121,12 +121,21 @@ schedules:
 1.  **核心架构**: `SchedulerManager` 和 `ActionRegistry` 已实现，支持 Cron (aiocron) 和 Interval (asyncio) 任务。
 2.  **基础 Action**: `core.send_group_msg` 和 `core.send_private_msg` 已实现并注册。
 3.  **系统集成**: `main.py` 已集成 Scheduler 启动流程。
-4.  **业务适配 (进行中)**: `summary.py` 和 `dida_scheduler.py` 已添加 Action 注册代码。
+4.  **业务适配**:
+    - `summary.py` 已添加 `summary.daily_report` 注册代码。
+    - `dida_scheduler.py` 已添加 `dida.poll` 和 `dida.push_task_list` 注册代码。
+5.  **核心业务 Action 实现**:
+    - `dida.push_task_list` 已在 `workflows/dida/dida_scheduler.py` 中实现，支持 `group_id`, `user_qq`, `day_range`, `limit` 参数。
+6.  **基础设施修复**: `agent_config_loader.py` 中已实现 `is_scheduler_enabled()` 函数。
+7.  **配置迁移**: `agent_config.yaml` 已添加 `scheduler_manager` 配置，包含“早安提醒”、“每日总结”和“滴答轮询”任务。
 
-### 🚧 阻塞点与待办 (Blockers & Todo)
-1.  **配置加载器缺失**: `agent_config_loader.py` 中缺少 `is_scheduler_enabled()` 函数，导致业务模块导入报错。
-2.  **Dida 任务推送未实现**: `dida.push_task_list` Action 尚未实现，无法配置早安任务。
-3.  **配置文件未更新**: `agent_config.yaml` 尚未添加 `schedules` 字段。
+### 📅 下一步计划 (Next Steps)
+1.  **验证与清理**:
+    - 运行 Bot 验证所有定时任务是否按预期触发。
+    - 确认无误后，移除 `summary.py` 和 `dida_scheduler.py` 中的旧调度代码（`while True` 循环和硬编码的 `aiocron`）。
+2.  **增强功能 (P1)**:
+    - 实现 `fail_fast` 控制（当前默认 continue）。
+    - 添加更多 Action（如 `dida.create_task` 等）。
 
 ---
 
@@ -135,11 +144,11 @@ schedules:
 2.  [x] 实现 `scheduler_manager.py` (现为 `manager.py`)。
 3.  [x] 定义 `ActionRegistry` 并注册基础功能。
 4.  [x] 修改 `main.py` 引入 Scheduler 启动逻辑。
-5.  [ ] **修复基础设施**: 在 `workflows/agent_config_loader.py` 中实现 `is_scheduler_enabled()`。
-6.  [ ] **实现核心业务 Action**:
-    -   实现 `dida.push_task_list` (支持按 `day_range` 筛选任务)。
-    -   完善 `dida.poll` 的参数化调用。
-7.  [ ] **配置迁移**: 在 `agent_config.yaml` 中添加 `schedules` 字段，并配置“早安”、“每日总结”和“滴答轮询”任务。
+5.  [x] **修复基础设施**: 在 `workflows/agent_config_loader.py` 中实现 `is_scheduler_enabled()`。
+6.  [x] **实现核心业务 Action**:
+    -   [x] 实现 `dida.push_task_list` (支持按 `day_range` 筛选任务)。
+    -   [x] 完善 `dida.poll` 的参数化调用。
+7.  [x] **配置迁移**: 在 `agent_config.yaml` 中添加 `schedules` 字段，并配置“早安”、“每日总结”和“滴答轮询”任务。
 8.  [ ] **验证与清理**: 启动 Bot 验证调度器工作正常，移除旧的硬编码调度逻辑。
 
 请确认是否按照此 PRD 进行开发？你可以回复“**开始执行**”或提出修改意见。

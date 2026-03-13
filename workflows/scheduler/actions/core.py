@@ -1,6 +1,5 @@
-from ncatbot.core import BotClient
-from ...scheduler.registry import action_registry
 import logging
+from ...scheduler.registry import action_registry
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +12,7 @@ async def send_group_msg(group_id: str, message: str) -> None:
     try:
         from bot import bot
         # Ensure group_id is string
-        await bot.api.post_group_msg(str(group_id), text=str(message))
+        await bot.api.post_group_msg(group_id=str(group_id), text=str(message))
         logger.info(f"[Scheduler] Sent group message to {group_id}")
     except Exception as e:
         logger.error(f"[Scheduler] Error sending group message to {group_id}: {e}")
@@ -27,7 +26,7 @@ async def send_private_msg(user_id: str, message: str) -> None:
     try:
         from bot import bot
         # Ensure user_id is string
-        await bot.api.post_private_msg(str(user_id), text=str(message))
+        await bot.api.post_private_msg(user_id=str(user_id), text=str(message))
         logger.info(f"[Scheduler] Sent private message to {user_id}")
     except Exception as e:
         logger.error(f"[Scheduler] Error sending private message to {user_id}: {e}")
