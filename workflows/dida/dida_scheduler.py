@@ -8,8 +8,9 @@ from typing import Any
 from ncatbot.core import GroupMessage, PrivateMessage
 
 from bot import bot
-from ..agent_config_loader import load_current_agent_config
+from ..agent_config_loader import load_current_agent_config, is_scheduler_enabled
 from .dida_service import DidaService
+from ..scheduler.registry import action_registry
 
 
 def _now() -> datetime:
@@ -579,6 +580,14 @@ class DidaScheduler:
         return {"ok": False, "message": "⚠️ 未识别的 Dida 操作。"}
 
     async def start(self) -> None:
+        if is_scheduler_enabled():
+            print("[DIDA] Scheduler enabled, skipping internal loop.")
+            # Register actions
+            action_registry.register("dida.poll", self.poll_action)
+            action_registry.register("dida.push_task_list", self.push_task_list_action)
+            return
+
+        print("[DIDA] Scheduler disabled (legacy mode), starting internal loop...")
         while True:
             config = self._get_runtime_config()
             try:
@@ -586,6 +595,140 @@ class DidaScheduler:
             except Exception as error:
                 print(f"[DidaScheduler] error={error}")
             await asyncio.sleep(config["poll_interval_seconds"])
+
+    async def poll_action(self, project_ids: list[str] = None) -> None:
+        """Wrapper for scheduler to call poll_once with overridden config."""
+        config = self._get_runtime_config()
+        if project_ids:
+            # Override project_ids if provided
+            config["project_ids"] = [str(pid).strip() for pid in project_ids]
+        await self.poll_once(config)
+
+    async def push_task_list_action(
+        self, 
+        group_id: str = None, 
+        user_qq: str = None, 
+        day_range: str = "today", 
+        limit: int = 10
+    ) -> None:
+        """Action: Push task list to a group or private user."""
+        service = self._get_service()
+        if not service:
+            self._log("push_task_list skipped: service not configured")
+            return
+            
+        target_user_qq = str(user_qq or "").strip()
+        if not target_user_qq:
+             self._log("push_task_list skipped: user_qq is required")
+             return
+
+        tokens = self.load_tokens()
+        token_data = tokens.get(target_user_qq)
+        if not token_data or not token_data.get("access_token"):
+            self._log(f"push_task_list skipped: user {target_user_qq} not bound")
+            return
+
+        access_token = token_data.get("access_token")
+        
+        # 1. Fetch all tasks
+        projects = await asyncio.to_thread(service.get_projects, access_token=access_token)
+        target_project_ids = []
+        if isinstance(projects, list):
+            target_project_ids = [str(p.get("id")) for p in projects if p.get("id")]
+        if "inbox" not in target_project_ids:
+            target_project_ids.append("inbox")
+            
+        all_tasks = []
+        tasks_list = await asyncio.gather(
+            *[
+                asyncio.to_thread(service.get_project_data, access_token=access_token, project_id=pid)
+                for pid in target_project_ids
+            ],
+            return_exceptions=True
+        )
+        
+        for res in tasks_list:
+            if isinstance(res, dict):
+                tasks = res.get("tasks", [])
+                if isinstance(tasks, list):
+                    all_tasks.extend(tasks)
+
+        # 2. Filter tasks
+        filtered_tasks = []
+        now = _now()
+        today_str = now.strftime("%Y-%m-%d")
+        tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        for task in all_tasks:
+            status = str(task.get("status", "0"))
+            if status != "0":  # Skip completed
+                continue
+                
+            due_raw = task.get("dueDate")
+            if not due_raw:
+                # If day_range is 'all', include no-date tasks? 
+                # For now, let's say 'all' includes everything, but 'today'/'overdue' requires date.
+                if day_range == "all":
+                    filtered_tasks.append(task)
+                continue
+                
+            dt = _parse_dida_datetime(due_raw)
+            if not dt:
+                continue
+                
+            dt_local = dt.astimezone()
+            dt_str = dt_local.strftime("%Y-%m-%d")
+            
+            is_overdue = dt_local < now and dt_str != today_str
+            is_today = dt_str == today_str
+            is_tomorrow = dt_str == tomorrow_str
+            
+            if day_range == "overdue" and is_overdue:
+                filtered_tasks.append(task)
+            elif day_range == "today" and (is_overdue or is_today):
+                filtered_tasks.append(task)
+            elif day_range == "tomorrow" and is_tomorrow:
+                filtered_tasks.append(task)
+            elif day_range == "all":
+                filtered_tasks.append(task)
+
+        # 3. Sort and Limit
+        # Sort by due date
+        filtered_tasks.sort(key=lambda x: str(x.get("dueDate", "") or "z"))
+        
+        if limit > 0:
+            filtered_tasks = filtered_tasks[:limit]
+            
+        if not filtered_tasks:
+            self._log(f"push_task_list: no tasks found for {target_user_qq} range={day_range}")
+            # Optionally send "No tasks" message?
+            return
+
+        # 4. Format Message
+        lines = [f"📋 待办清单 ({day_range})"]
+        for task in filtered_tasks:
+            title = str(task.get("title", "")).strip()
+            due_raw = task.get("dueDate")
+            due_info = ""
+            if due_raw:
+                dt = _parse_dida_datetime(due_raw)
+                if dt:
+                    if bool(task.get("isAllDay")):
+                        due_info = f" [{dt.astimezone().strftime('%m-%d')}]"
+                    else:
+                        due_info = f" [{dt.astimezone().strftime('%H:%M')}]"
+            
+            lines.append(f"- {title}{due_info}")
+            
+        message = "\n".join(lines)
+        
+        # 5. Send Message
+        if group_id:
+            await bot.api.post_group_msg(str(group_id), text=f"[CQ:at,qq={target_user_qq}]\n{message}")
+        else:
+            await bot.api.post_private_msg(str(target_user_qq), text=message)
+            
+        self._log(f"push_task_list sent to {target_user_qq} (group={group_id}) count={len(filtered_tasks)}")
 
     async def poll_once(self, config: dict[str, Any]) -> None:
         service = self._get_service()

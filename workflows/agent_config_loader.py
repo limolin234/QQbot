@@ -44,7 +44,15 @@ def load_current_agent_config(module_file: str) -> dict[str, Any]:
     current_file_name = os.path.basename(module_file)
 
     # 优先查找当前目录，若无则查找上级目录（适配子目录中的 agent）
+    # 同时，如果 module_file 是虚拟文件名（不含路径），我们假设它在 workflows/agent_config.yaml 中
+    
     search_dirs = [module_dir, os.path.dirname(module_dir)]
+    # Special handling for scheduler config or other top-level configs if module_file is just "scheduler_manager.py"
+    # But usually module_file passed here is __file__ (absolute path).
+    
+    # If the file is in workflows/scheduler/, its parent is workflows/scheduler, grandparent is workflows.
+    # We might need to search grandparent too if the config is in workflows/agent_config.yaml
+    search_dirs.append(os.path.dirname(os.path.dirname(module_dir)))
 
     for directory in search_dirs:
         # 1. Try YAML
@@ -72,9 +80,15 @@ def load_current_agent_config(module_file: str) -> dict[str, Any]:
             config = load_agent_config_by_filename(current_file_name, config_path=json_path)
             if config:
                 return config
-
+    
+    # Debug info (only visible in dev)
+    # print(f"Failed to load config for {current_file_name} in {search_dirs}")
     return {}
 
+
+def is_scheduler_enabled() -> bool:
+    """Check if scheduler is enabled in agent_config.yaml."""
+    return check_config("scheduler_manager", os.path.dirname(__file__))
 
 _cache: Dict[Tuple[str, str], bool] = {}
 
