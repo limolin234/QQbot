@@ -1,5 +1,6 @@
 """AutoReply 工作流：当前只实现“是否需要回复”的判定。"""
 
+
 from __future__ import annotations
 
 import asyncio
@@ -167,8 +168,12 @@ def _extract_reply_text_from_raw_output(raw_output: Any) -> str:
             if reply_text:
                 return reply_text
 
-    if cleaned.startswith("{") or cleaned.startswith("["):
-        return ""
+    # 尝试直接从文本中提取 "reply_text": "..." 片段（即使整体不是合法 JSON）
+    m = re.search(r'"reply_text"\s*:\s*"(.+?)"', cleaned, flags=re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    # 兜底：直接返回清洗后的文本
     return cleaned
 
 
