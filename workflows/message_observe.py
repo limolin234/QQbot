@@ -1,10 +1,15 @@
 import asyncio
 import re, json
+import threading
+import shutil
+import os
 from datetime import datetime, timezone
 from ncatbot.core import PrivateMessage, GroupMessage
 
 LOG_FILE_PATH = "message.jsonl"
 FILE_LOCK = asyncio.Lock()
+# 添加物理文件锁，用于多线程环境下的文件访问互斥（解决 Windows 文件占用问题）
+PHYSICAL_FILE_LOCK = threading.Lock()
 MAX_LOG_LINES = 3000
 TRUNCATE_TO_LINES = 2000
 _line_counter = 0
@@ -31,8 +36,16 @@ def _truncate_log() -> None:
         tmp_path = LOG_FILE_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
-        import os
-        os.replace(tmp_path, LOG_FILE_PATH)
+        
+        # 使用锁保护重命名操作
+        with PHYSICAL_FILE_LOCK:
+            try:
+                # Docker bind mount 场景下不能使用 os.replace 覆盖原文件
+                # 必须使用 copy + truncate 的方式保留原文件 inode
+                shutil.copyfile(tmp_path, LOG_FILE_PATH)
+                os.remove(tmp_path)
+            except OSError:
+                pass  # 如果失败，下次再试，避免崩溃
 
 
 def clean_message(raw_message: str) -> str:
@@ -115,9 +128,10 @@ def _write_log(
         "cleaned_message": cleaned_message,
     }
 
-    with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        f.flush()
+    with PHYSICAL_FILE_LOCK:
+        with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            f.flush()
 
     _line_counter += 1
     if _line_counter >= MAX_LOG_LINES:
@@ -140,6 +154,100 @@ async def group_entrance(msg: GroupMessage) -> None:
             "group",
             cleaned_message,
         )
+
+
+def _parse_timestamp_to_epoch_seconds(ts_text: str) -> float | None:
+    text = str(ts_text).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        pass
+    iso_text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso_text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def load_recent_context_messages(
+    *,
+    chat_type: str,
+    group_id: str,
+    user_id: str,
+    current_ts: str,
+    current_cleaned_message: str,
+    limit: int,
+    max_chars: int,
+    window_seconds: int,
+    log_path: str = LOG_FILE_PATH,
+) -> list[str]:
+    """从 message.jsonl 读取最近上下文消息（按 chat_type + 会话范围）。"""
+    try:
+        with PHYSICAL_FILE_LOCK:
+            with open(log_path, "r", encoding="utf-8") as file:
+                raw_lines = [line.strip() for line in file if line.strip()]
+    except OSError:
+        return []
+
+    matched_records = []
+    target_chat_type = str(chat_type).strip().lower()
+    target_group = str(group_id)
+    target_user = str(user_id)
+    current_epoch = _parse_timestamp_to_epoch_seconds(current_ts)
+    window_enabled = bool(window_seconds > 0 and current_epoch is not None)
+    for raw_line in raw_lines:
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        payload_chat_type = str(payload.get("chat_type", "")).strip().lower()
+        if payload_chat_type != target_chat_type:
+            continue
+        if target_chat_type == "group" and str(payload.get("group_id", "")) != target_group:
+            continue
+        if target_chat_type == "private" and str(payload.get("user_id", "")) != target_user:
+            continue
+
+        cleaned_message = str(payload.get("cleaned_message", "")).strip()
+        if not cleaned_message:
+            continue
+        ts = str(payload.get("ts", ""))
+        if window_enabled:
+            payload_epoch = _parse_timestamp_to_epoch_seconds(ts)
+            if payload_epoch is not None and payload_epoch < (current_epoch - window_seconds):
+                continue
+        sender_name = str(payload.get("user_name", "")).strip() or str(payload.get("user_id", ""))
+        matched_records.append((ts, sender_name, cleaned_message))
+
+    context_lines = []
+    total_chars = 0
+    skipped_current = False
+    for ts, sender_name, message_text in reversed(matched_records):
+        if (
+            not skipped_current
+            and str(ts) == str(current_ts)
+            and str(message_text) == str(current_cleaned_message)
+        ):
+            skipped_current = True
+            continue
+
+        line = f"[{ts}] {sender_name}: {message_text}" if ts else f"{sender_name}: {message_text}"
+        if total_chars + len(line) > max_chars:
+            break
+        context_lines.append(line)
+        total_chars += len(line)
+        if len(context_lines) >= limit:
+            break
+
+    return list(reversed(context_lines))
 
 
 async def private_entrance(msg: PrivateMessage) -> None:
