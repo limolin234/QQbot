@@ -3,7 +3,7 @@ version: "3.8"
 services:
   qqbot:
     # 1. 修改镜像路径：指向 GHCR 仓库，保留环境变量灵活性
-    image: ${IMAGE_NAME:-ghcr.io/limolin234/qqbot:latest}
+    image: ${IMAGE_NAME:-qqbot:local}
     container_name: qqbot
     
     # 2. 优化重启策略：生产环境建议使用 unless-stopped
@@ -26,6 +26,7 @@ services:
       # 配置文件和数据建议挂载
       - ./config.yaml:/app/config.yaml
       - ./.env:/app/.env
+      - ../workflows:/app/workflows:ro
       - ./workflows/agent_config.yaml:/app/workflows/agent_config.yaml:ro
       - ./message.jsonl:/app/message.jsonl
       - ./logs:/app/logs

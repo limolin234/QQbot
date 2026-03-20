@@ -3,39 +3,63 @@ from agent_pool import setup_agent_pool
 from workflows.agent_config_loader import check_config
 from bot import bot
 from workflows import message_observe, agent_observe
-from workflows import summary, auto_reply, forward, dida
+from workflows import summary, auto_reply, forward, dida, reminder, volunteer_monitor
+from workflows.router import route_private
+from workflows.volunteer_monitor_scheduler import _get_config as _get_volunteer_config
 
-@bot.private_event()# type: ignore
+
+def _get_admin_qq() -> str:
+    return str(_get_volunteer_config().get("admin_qq") or "").strip()
+
+
+@bot.private_event()  # type: ignore
 async def on_private_message(msg: PrivateMessage):
     await message_observe.private_entrance(msg)
-    if check_config("summary_config","./workflows"):
+    if check_config("summary_config", "./workflows"):
         await summary.private_entrance(msg)
-    if check_config("auto_reply_config","./workflows"):
-        await auto_reply.entrance(msg, chat_type="private")
-    if check_config("dida_agent_config","./workflows"):
-        await dida.private_entrance(msg)
+
+    await route_private(
+        msg,
+        admin_qq=_get_admin_qq(),
+        volunteer_monitor_enabled=check_config("volunteer_monitor_config", "./workflows"),
+        dida_enabled=check_config("dida_agent_config", "./workflows"),
+        reminder_enabled=check_config("reminder_config", "./workflows"),
+        auto_reply_fn=lambda m: auto_reply.entrance(m, chat_type="private"),
+        volunteer_monitor_fn=volunteer_monitor.private_entrance,
+        dida_fn=dida.private_entrance,
+        reminder_fn=reminder.private_entrance,
+    )
 
 
-@bot.group_event()# type: ignore
+@bot.group_event()  # type: ignore
 async def on_group_message(msg: GroupMessage):
     await message_observe.group_entrance(msg)
-    if check_config("forward_config","./workflows"):
+    if check_config("forward_config", "./workflows"):
         await forward.group_entrance(msg)
-    if check_config("auto_reply_config","./workflows"):
+    if check_config("auto_reply_config", "./workflows"):
         await auto_reply.entrance(msg, chat_type="group")
-    if check_config("dida_agent_config","./workflows"):
+    if check_config("dida_agent_config", "./workflows"):
         await dida.group_entrance(msg)
-    
-@bot.startup_event()# type: ignore
+    if check_config("reminder_config", "./workflows"):
+        await reminder.group_entrance(msg)
+    if check_config("volunteer_monitor_config", "./workflows"):
+        await volunteer_monitor.group_entrance(msg)
+
+
+@bot.startup_event()  # type: ignore
 async def on_startup(*args):
     await setup_agent_pool()
     message_observe.start_up()
     agent_observe.start_up()
-    if check_config("summary_config","./workflows"):
+    if check_config("summary_config", "./workflows"):
         await summary.start_up()
-    if check_config("auto_reply_config","./workflows"):
+    if check_config("auto_reply_config", "./workflows"):
         await auto_reply.start_up()
-    if check_config("dida_agent_config","./workflows"):
+    if check_config("dida_agent_config", "./workflows"):
         await dida.start_up()
+    if check_config("reminder_config", "./workflows"):
+        await reminder.start_up()
+    if check_config("volunteer_monitor_config", "./workflows"):
+        await volunteer_monitor.start_up()
 
 bot.run()

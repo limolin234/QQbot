@@ -900,12 +900,31 @@ def get_summary_send_mode() -> str:
 
 
 async def private_entrance(msg: PrivateMessage) -> None:
-    if msg.user_id in user_group_map and msg.raw_message.strip() == "/summary":
-        if not user_group_map.get(msg.user_id):
+    uid_str = str(msg.user_id)
+    if uid_str in user_group_map and msg.raw_message.strip() == "/summary":
+        user_name_str = getattr(getattr(msg, "sender", None), "nickname", None) or uid_str
+        log_trigger = bind_agent_event(
+            agent_name="summary",
+            task_type="SUMMARY",
+            run_id=generate_run_id(),
+            chat_type="private",
+            group_id="private",
+            user_id=uid_str,
+            user_name=user_name_str,
+            ts=str(getattr(msg, "time", "")),
+        )
+        if not user_group_map.get(uid_str):
+            log_trigger(stage="trigger_rejected", decision={"reason": "no_authorized_groups"})
             await bot.api.post_private_msg(msg.user_id, text="你没有被授权汇总任何群。")
             return
-        await daily_summary(run_mode="manual", user_id=msg.user_id)
+        log_trigger(stage="trigger_accepted", extra={"groups": user_group_map.get(uid_str)})
+        await daily_summary(run_mode="manual", user_id=uid_str)
         await bot.api.post_private_msg(msg.user_id, text="Starting...")
+        if uid_str != str(QQnumber):
+            await bot.api.post_private_msg(
+                QQnumber,
+                text=f"用户 {user_name_str}（ID {uid_str}）触发了 /summary",
+            )
 
 
 async def _execute_daily_summary(run_mode: str = "manual", user_id: str = QQnumber ) -> None:

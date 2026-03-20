@@ -520,6 +520,7 @@ async def _execute_auto_reply_payload(payload: dict[str, str]) -> None:
         reply_text = str(result.get("reply_text", "") or "").strip()
 
         if should_reply_flag and reply_text:
+            reply_text = reply_text + "\n\n— [AI助手]"
             log_event(stage="send_start", extra={"reply_length": len(reply_text)})
             try:
                 if chat_type == "group":
@@ -570,6 +571,29 @@ async def _enqueue_auto_reply_payload(payload: dict[str, str]) -> None:
 async def auto_reply_pending_worker() -> None:
     dispatcher = get_auto_reply_dispatcher()
     await dispatcher.pending_worker(enqueue_payload=_enqueue_auto_reply_payload)
+
+
+async def enqueue_auto_reply_if_monitored(
+    *,
+    chat_type: str,
+    monitor_value: str,
+    raw_message: str,
+    cleaned_message: str,
+    user_id: str,
+    user_name: str,
+    ts: str,
+) -> bool:
+    dispatcher = get_auto_reply_dispatcher()
+    return await dispatcher.enqueue_if_monitored(
+        chat_type=chat_type,
+        monitor_value=monitor_value,
+        raw_message=raw_message,
+        cleaned_message=cleaned_message,
+        user_id=user_id,
+        user_name=user_name,
+        ts=ts,
+        enqueue_payload=_enqueue_auto_reply_payload,
+    )
 
 
 async def entrance(
