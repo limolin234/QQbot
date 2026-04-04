@@ -7,6 +7,16 @@ from zoneinfo import ZoneInfo
 from croniter import croniter
 
 
+def _normalize_cron_expression(raw: str) -> str:
+    expression = (raw or "").strip()
+    if not expression:
+        return ""
+    parts = expression.split()
+    if len(parts) >= 6:
+        return " ".join(parts[1:6])
+    return expression
+
+
 def build_timeline(
     timezone: str,
     schedules: list[dict[str, Any]],
@@ -30,7 +40,9 @@ def build_timeline(
         kind = str(schedule.get("type") or "cron")
 
         if kind == "cron":
-            expression = str(schedule.get("expression") or "").strip()
+            expression = _normalize_cron_expression(
+                str(schedule.get("expression") or "")
+            )
             if not expression:
                 continue
             try:

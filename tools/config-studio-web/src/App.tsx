@@ -1396,6 +1396,64 @@ function StepTreeEditor({
     );
 }
 
+function normalizeTimeUnit(value: string, max: number): string {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '00';
+    const safe = Math.max(0, Math.min(max, Math.floor(n)));
+    return String(safe).padStart(2, '0');
+}
+
+function cronFromHms(hour: string, minute: string, second: string): string {
+    const hh = normalizeTimeUnit(hour, 23);
+    const mm = normalizeTimeUnit(minute, 59);
+    const ss = normalizeTimeUnit(second, 59);
+    return `${ss} ${mm} ${hh} * * *`;
+}
+
+function hmsFromCron(expression: string | undefined): { hour: string; minute: string; second: string } {
+    const raw = (expression || '').trim();
+    if (!raw) return { hour: '08', minute: '00', second: '00' };
+    const parts = raw.split(/\s+/);
+    if (parts.length >= 6) {
+        return {
+            second: normalizeTimeUnit(parts[0], 59),
+            minute: normalizeTimeUnit(parts[1], 59),
+            hour: normalizeTimeUnit(parts[2], 23),
+        };
+    }
+    if (parts.length >= 5) {
+        return {
+            second: '00',
+            minute: normalizeTimeUnit(parts[0], 59),
+            hour: normalizeTimeUnit(parts[1], 23),
+        };
+    }
+    return { hour: '08', minute: '00', second: '00' };
+}
+
+function StepTreePreview({ nodes }: { nodes: StepNode[] }) {
+    if (!nodes || nodes.length === 0) {
+        return <div className="muted">暂无步骤</div>;
+    }
+
+    return (
+        <ul className="step-preview-tree">
+            {nodes.map((node, idx) => (
+                <li key={node.id || `${node.kind}_${idx}`}>
+                    <span>
+                        {node.kind === 'group'
+                            ? `分组: ${node.name || '未命名分组'}`
+                            : `动作: ${node.action || '未设置动作'}`}
+                    </span>
+                    {node.kind === 'group' && (node.children || []).length > 0 && (
+                        <StepTreePreview nodes={node.children || []} />
+                    )}
+                </li>
+            ))}
+        </ul>
+    );
+}
+
 export default function App() {
     const [tab, setTab] = useState<TabKey>('basic');
     const [status, setStatus] = useState('idle');
@@ -1425,6 +1483,8 @@ export default function App() {
     const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
     const [timelineCount, setTimelineCount] = useState(20);
     const [schedulerMessage, setSchedulerMessage] = useState('');
+    const [openScheduleBasicModal, setOpenScheduleBasicModal] = useState(false);
+    const [openScheduleStepModal, setOpenScheduleStepModal] = useState(false);
 
     const fixedSections = useMemo(() => normalizeFixedSections(agent), [agent]);
     const schedulerConfig = useMemo(() => getSchedulerManagerConfig(agent), [agent]);
@@ -1835,7 +1895,7 @@ export default function App() {
                                 <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
                                 <li>name: 任务名称，仅用于识别和展示。</li>
                                 <li>type: 调度类型，可选 cron 或 interval。</li>
-                                <li>expression: cron 表达式，仅在 type=cron 时生效。</li>
+                                <li>执行时间(HH:MM:SS): 仅在 type=cron 时填写，系统会自动转换为 cron 表达式。</li>
                                 <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
                                 <li>enabled: 是否启用该 schedule。</li>
                                 <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
@@ -1867,7 +1927,7 @@ export default function App() {
 
                             <h4>5. 推荐使用流程</h4>
                             <ol>
-                                <li>先创建 schedule 并设置 type、expression/seconds、enabled。</li>
+                                <li>先创建 schedule 并设置 type、执行时间(HH:MM:SS)/seconds、enabled。</li>
                                 <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
                                 <li>点击刷新时间线确认触发节奏。</li>
                                 <li>点击保存并编译 Scheduler 落盘生效。</li>
@@ -1877,7 +1937,7 @@ export default function App() {
 
                     <div className="row gap-8 wrap">
                         <div className="grow">
-                            <label>timezone</label>
+                            <label>时区</label>
                             <input
                                 value={schedulerConfig.timezone}
                                 onChange={(e) =>
@@ -1889,7 +1949,7 @@ export default function App() {
                             />
                         </div>
                         <div>
-                            <label>timeline count</label>
+                            <label>时间线条数</label>
                             <input
                                 type="number"
                                 value={timelineCount}
@@ -1915,9 +1975,20 @@ export default function App() {
                                         className={selectedScheduleIndex === idx ? 'selected' : ''}
                                         onClick={() => setSelectedScheduleIndex(idx)}
                                     >
-                                        <span>
-                                            {item.name || `schedule_${idx + 1}`} ({item.type}) {item.enabled ? '启用' : '停用'}
-                                        </span>
+                                        <div className="grow">
+                                            <div>
+                                                {item.name || `schedule_${idx + 1}`} | {item.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | {item.enabled ? '已启用' : '已停用'}
+                                            </div>
+                                            <div className="rule-preview">
+                                                {item.type === 'cron'
+                                                    ? `执行时间: ${(() => {
+                                                        const hms = hmsFromCron(item.expression);
+                                                        return `${hms.hour}:${hms.minute}:${hms.second}`;
+                                                    })()}`
+                                                    : `执行间隔: ${item.seconds || 60} 秒`}
+                                            </div>
+                                            <StepTreePreview nodes={item.steps_tree || []} />
+                                        </div>
                                         <div className="row gap-8 wrap">
                                             <button
                                                 onClick={(e) => {
@@ -1977,99 +2048,175 @@ export default function App() {
 
                     {selectedSchedule ? (
                         <div className="card top-gap">
-                            <h3>编辑 Schedule</h3>
-                            <div className="grid2">
-                                <div>
-                                    <label>name</label>
-                                    <input
-                                        value={selectedSchedule.name}
-                                        onChange={(e) =>
-                                            updateScheduleAt(selectedScheduleIndex, {
-                                                ...selectedSchedule,
-                                                name: e.target.value,
-                                            })
-                                        }
-                                    />
-                                </div>
-                                <div>
-                                    <label>type</label>
-                                    <select
-                                        value={selectedSchedule.type}
-                                        onChange={(e) => {
-                                            const nextType = e.target.value as 'cron' | 'interval';
-                                            const nextSchedule: ScheduleConfig = {
-                                                ...selectedSchedule,
-                                                type: nextType,
-                                            };
-                                            if (nextType === 'cron') {
-                                                nextSchedule.expression = selectedSchedule.expression || '*/5 * * * *';
-                                                delete nextSchedule.seconds;
-                                            } else {
-                                                nextSchedule.seconds = selectedSchedule.seconds || 60;
-                                                delete nextSchedule.expression;
-                                            }
-                                            updateScheduleAt(selectedScheduleIndex, nextSchedule);
-                                        }}
-                                    >
-                                        <option value="cron">cron</option>
-                                        <option value="interval">interval</option>
-                                    </select>
-                                </div>
-                                <label className="row gap-8">
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedSchedule.enabled}
-                                        onChange={(e) =>
-                                            updateScheduleAt(selectedScheduleIndex, {
-                                                ...selectedSchedule,
-                                                enabled: e.target.checked,
-                                            })
-                                        }
-                                    />
-                                    enabled
-                                </label>
-                                {selectedSchedule.type === 'cron' ? (
-                                    <div>
-                                        <label>expression</label>
-                                        <input
-                                            value={selectedSchedule.expression || ''}
-                                            onChange={(e) =>
-                                                updateScheduleAt(selectedScheduleIndex, {
-                                                    ...selectedSchedule,
-                                                    expression: e.target.value,
-                                                })
-                                            }
-                                        />
+                            <h3>当前任务</h3>
+                            <div className="config-summary-card">
+                                <div className="row between wrap gap-8">
+                                    <strong>{selectedSchedule.name || '未命名任务'}</strong>
+                                    <div className="row gap-8">
+                                        <button onClick={() => setOpenScheduleBasicModal(true)}>编辑基础参数</button>
+                                        <button onClick={() => setOpenScheduleStepModal(true)}>编辑执行步骤</button>
                                     </div>
-                                ) : (
-                                    <div>
-                                        <label>seconds</label>
-                                        <input
-                                            type="number"
-                                            value={selectedSchedule.seconds || 60}
-                                            onChange={(e) =>
-                                                updateScheduleAt(selectedScheduleIndex, {
-                                                    ...selectedSchedule,
-                                                    seconds: Number(e.target.value),
-                                                })
-                                            }
-                                        />
-                                    </div>
-                                )}
+                                </div>
+                                <div className="rule-preview">
+                                    类型：{selectedSchedule.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | 状态：{selectedSchedule.enabled ? '已启用' : '已停用'}
+                                </div>
+                                <div className="rule-preview">
+                                    {selectedSchedule.type === 'cron'
+                                        ? `执行时间：${(() => {
+                                            const hms = hmsFromCron(selectedSchedule.expression);
+                                            return `${hms.hour}:${hms.minute}:${hms.second}`;
+                                        })()}`
+                                        : `执行间隔：${selectedSchedule.seconds || 60} 秒`}
+                                </div>
                             </div>
 
                             <div className="top-gap">
-                                <label>steps_tree</label>
-                                <StepTreeEditor
-                                    nodes={selectedSchedule.steps_tree || []}
-                                    onChange={(steps_tree) =>
-                                        updateScheduleAt(selectedScheduleIndex, {
-                                            ...selectedSchedule,
-                                            steps_tree,
-                                        })
-                                    }
-                                />
+                                <label>步骤树预览</label>
+                                <div className="rule-box">
+                                    <StepTreePreview nodes={selectedSchedule.steps_tree || []} />
+                                </div>
                             </div>
+
+                            <FormModal
+                                open={openScheduleBasicModal}
+                                title="Schedule 基础参数"
+                                onClose={() => setOpenScheduleBasicModal(false)}
+                            >
+                                <div className="grid2">
+                                    <div>
+                                        <label>任务名称</label>
+                                        <input
+                                            value={selectedSchedule.name}
+                                            onChange={(e) =>
+                                                updateScheduleAt(selectedScheduleIndex, {
+                                                    ...selectedSchedule,
+                                                    name: e.target.value,
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <label>任务类型</label>
+                                        <select
+                                            value={selectedSchedule.type}
+                                            onChange={(e) => {
+                                                const nextType = e.target.value as 'cron' | 'interval';
+                                                const nextSchedule: ScheduleConfig = {
+                                                    ...selectedSchedule,
+                                                    type: nextType,
+                                                };
+                                                if (nextType === 'cron') {
+                                                    const hms = hmsFromCron(selectedSchedule.expression);
+                                                    nextSchedule.expression = cronFromHms(hms.hour, hms.minute, hms.second);
+                                                    delete nextSchedule.seconds;
+                                                } else {
+                                                    nextSchedule.seconds = selectedSchedule.seconds || 60;
+                                                    delete nextSchedule.expression;
+                                                }
+                                                updateScheduleAt(selectedScheduleIndex, nextSchedule);
+                                            }}
+                                        >
+                                            <option value="cron">定时(Cron)</option>
+                                            <option value="interval">间隔(Interval)</option>
+                                        </select>
+                                    </div>
+
+                                    <SwitchField
+                                        checked={selectedSchedule.enabled}
+                                        onChange={(enabled) =>
+                                            updateScheduleAt(selectedScheduleIndex, {
+                                                ...selectedSchedule,
+                                                enabled,
+                                            })
+                                        }
+                                        label="启用任务"
+                                    />
+
+                                    {selectedSchedule.type === 'cron' ? (
+                                        <div className="full-row">
+                                            <label>执行时间（24小时制）</label>
+                                            <div className="row gap-8 wrap">
+                                                {(() => {
+                                                    const hms = hmsFromCron(selectedSchedule.expression);
+                                                    return (
+                                                        <>
+                                                            <input
+                                                                className="time-field"
+                                                                value={hms.hour}
+                                                                onChange={(e) =>
+                                                                    updateScheduleAt(selectedScheduleIndex, {
+                                                                        ...selectedSchedule,
+                                                                        expression: cronFromHms(e.target.value, hms.minute, hms.second),
+                                                                    })
+                                                                }
+                                                                placeholder="小时"
+                                                            />
+                                                            <span>:</span>
+                                                            <input
+                                                                className="time-field"
+                                                                value={hms.minute}
+                                                                onChange={(e) =>
+                                                                    updateScheduleAt(selectedScheduleIndex, {
+                                                                        ...selectedSchedule,
+                                                                        expression: cronFromHms(hms.hour, e.target.value, hms.second),
+                                                                    })
+                                                                }
+                                                                placeholder="分钟"
+                                                            />
+                                                            <span>:</span>
+                                                            <input
+                                                                className="time-field"
+                                                                value={hms.second}
+                                                                onChange={(e) =>
+                                                                    updateScheduleAt(selectedScheduleIndex, {
+                                                                        ...selectedSchedule,
+                                                                        expression: cronFromHms(hms.hour, hms.minute, e.target.value),
+                                                                    })
+                                                                }
+                                                                placeholder="秒"
+                                                            />
+                                                        </>
+                                                    );
+                                                })()}
+                                            </div>
+                                            <div className="muted">系统会在后台自动转换为 cron 表达式并保存。</div>
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <label>间隔秒数</label>
+                                            <input
+                                                type="number"
+                                                value={selectedSchedule.seconds || 60}
+                                                onChange={(e) =>
+                                                    updateScheduleAt(selectedScheduleIndex, {
+                                                        ...selectedSchedule,
+                                                        seconds: Number(e.target.value),
+                                                    })
+                                                }
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            </FormModal>
+
+                            <FormModal
+                                open={openScheduleStepModal}
+                                title="Schedule 执行步骤"
+                                onClose={() => setOpenScheduleStepModal(false)}
+                            >
+                                <div>
+                                    <label>步骤树</label>
+                                    <StepTreeEditor
+                                        nodes={selectedSchedule.steps_tree || []}
+                                        onChange={(steps_tree) =>
+                                            updateScheduleAt(selectedScheduleIndex, {
+                                                ...selectedSchedule,
+                                                steps_tree,
+                                            })
+                                        }
+                                    />
+                                </div>
+                            </FormModal>
                         </div>
                     ) : (
                         <div className="muted top-gap">暂无 Schedule，请先新增。</div>

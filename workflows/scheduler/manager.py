@@ -12,6 +12,17 @@ from ..agent_config_loader import load_agent_config_by_filename
 logger = logging.getLogger(__name__)
 
 
+def _normalize_cron_expression(raw: str) -> str:
+    expression = (raw or "").strip()
+    if not expression:
+        return ""
+    parts = expression.split()
+    if len(parts) >= 6:
+        # Config Studio may emit second-level input; aiocron runtime uses five-field expression.
+        return " ".join(parts[1:6])
+    return expression
+
+
 class SchedulerManager:
     def __init__(self):
         self.cron_jobs = []
@@ -67,6 +78,13 @@ class SchedulerManager:
 
     def _schedule_cron(self, schedule: ScheduleConfig) -> None:
         try:
+            expression = _normalize_cron_expression(schedule.expression or "")
+            if not expression:
+                logger.error(
+                    f"[Scheduler] Error: Cron schedule '{schedule.name}' expression is invalid."
+                )
+                return
+
             tz = None
             if self.config and self.config.timezone:
                 try:
@@ -77,14 +95,14 @@ class SchedulerManager:
                     )
 
             cron = aiocron.crontab(
-                schedule.expression,
+                expression,
                 func=self._make_job_func(schedule),
                 start=True,
                 tz=tz,
             )
             self.cron_jobs.append(cron)
             logger.info(
-                f"[Scheduler] Scheduled cron job: {schedule.name} ({schedule.expression}) tz={self.config.timezone}"
+                f"[Scheduler] Scheduled cron job: {schedule.name} ({expression}) tz={self.config.timezone}"
             )
         except Exception as e:
             logger.error(

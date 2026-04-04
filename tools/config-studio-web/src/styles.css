@@ -314,6 +314,23 @@ button {
     margin-top: 8px;
 }
 
+.step-preview-tree {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.step-preview-tree li {
+    margin-top: 4px;
+}
+
+.time-field {
+    width: 90px;
+    max-width: 90px;
+    text-align: center;
+}
+
 .array-box,
 .object-box {
     border: 1px dashed var(--line);

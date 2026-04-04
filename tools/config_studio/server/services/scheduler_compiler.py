@@ -3,6 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 
+def _normalize_cron_expression(raw: str) -> str:
+    expression = (raw or "").strip()
+    if not expression:
+        return ""
+    parts = expression.split()
+    if len(parts) >= 6:
+        # UI may provide HH:MM:SS converted to six-field cron; runtime uses five-field.
+        return " ".join(parts[1:6])
+    return expression
+
+
 def compile_scheduler_schedules(
     schedules: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -29,7 +40,9 @@ def compile_scheduler_schedules(
         }
 
         if schedule_type == "cron":
-            item["expression"] = str(schedule.get("expression") or "")
+            item["expression"] = _normalize_cron_expression(
+                str(schedule.get("expression") or "")
+            )
         elif schedule_type == "interval":
             seconds = schedule.get("seconds")
             try:
