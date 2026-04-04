@@ -1,171 +1,265 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-    compileSchedules,
     deployPush,
-    getAgentRaw,
     getAllConfig,
-    getTimeline,
     listSnapshots,
     restoreSnapshot,
     saveAgent,
-    saveAgentRaw,
     saveEnv,
     testConnection,
 } from './api';
-import type {
-    AgentConfigRoot,
-    JsonObject,
-    JsonValue,
-    ScheduleConfig,
-    StepNode,
-    TabKey,
-    TimelineEvent,
-} from './types';
+import type { AgentConfigRoot, JsonObject, JsonValue, TabKey } from './types';
 
-function newId() {
-    return Math.random().toString(36).slice(2, 10);
-}
+type FixedAgentKey = 'summary_config' | 'forward_config' | 'auto_reply_config' | 'dida_agent_config';
 
-function isObject(value: JsonValue | undefined): value is JsonObject {
-    return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function asObject(value: JsonValue | undefined): JsonObject {
-    return isObject(value) ? value : {};
-}
-
-function cloneValue<T>(value: T): T {
-    return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function parseScalarByType(raw: string, type: 'string' | 'number' | 'boolean') {
-    if (type === 'number') {
-        const num = Number(raw);
-        return Number.isNaN(num) ? 0 : num;
-    }
-    if (type === 'boolean') {
-        return raw === 'true';
-    }
-    return raw;
-}
-
-function getValueType(value: JsonValue): 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object' {
-    if (Array.isArray(value)) return 'array';
-    if (value === null) return 'null';
-    if (typeof value === 'object') return 'object';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    return 'string';
-}
-
-function createDefaultByKind(kind: 'string' | 'number' | 'boolean' | 'object' | 'array') {
-    if (kind === 'number') return 0;
-    if (kind === 'boolean') return false;
-    if (kind === 'object') return {};
-    if (kind === 'array') return [];
-    return '';
-}
-
-type ParamField =
-    | { key: string; label: string; kind: 'text' }
-    | { key: string; label: string; kind: 'number' }
-    | { key: string; label: string; kind: 'boolean' }
-    | { key: string; label: string; kind: 'string_list' }
-    | { key: string; label: string; kind: 'select'; options: string[] };
-
-const ACTION_PARAM_SCHEMAS: Record<string, ParamField[]> = {
-    'core.send_group_msg': [
-        { key: 'group_id', label: '群号', kind: 'text' },
-        { key: 'message', label: '消息内容', kind: 'text' },
-    ],
-    'core.send_private_msg': [
-        { key: 'user_id', label: '用户QQ', kind: 'text' },
-        { key: 'message', label: '消息内容', kind: 'text' },
-    ],
-    'dida.push_task_list': [
-        { key: 'group_id', label: '群号', kind: 'text' },
-        { key: 'user_qq', label: '用户QQ', kind: 'text' },
-        {
-            key: 'day_range',
-            label: '时间范围',
-            kind: 'select',
-            options: ['today', 'tomorrow', 'week', 'all'],
-        },
-        { key: 'limit', label: '任务数量上限', kind: 'number' },
-    ],
-    'dida.poll': [
-        { key: 'project_ids', label: '项目ID列表', kind: 'string_list' },
-        { key: 'max_tasks_scan_per_user', label: '每用户扫描上限', kind: 'number' },
-    ],
-    'summary.daily_report': [
-        {
-            key: 'run_mode',
-            label: '执行模式',
-            kind: 'select',
-            options: ['group', 'global'],
-        },
-        { key: 'send_to_groups', label: '目标群列表', kind: 'string_list' },
-    ],
+type AutoReplyRule = {
+    enabled: boolean;
+    chat_type: 'group' | 'private';
+    number: string;
+    trigger_mode: string;
+    keywords: string[];
+    ai_decision_prompt: string;
+    reply_prompt: string;
+    temperature?: number;
 };
 
-function ensureScheduler(agent: AgentConfigRoot): { timezone: string; schedules: ScheduleConfig[] } {
-    const root = asObject(agent.scheduler_manager);
-    if (!root.file_name) {
-        root.file_name = 'scheduler_manager.py';
-    }
-    const config = asObject(root.config);
-    if (!config.timezone || typeof config.timezone !== 'string') {
-        config.timezone = 'Asia/Shanghai';
-    }
-    if (!Array.isArray(config.schedules)) {
-        config.schedules = [];
-    }
-    root.config = config;
-    agent.scheduler_manager = root;
+type DidaRule = {
+    enabled: boolean;
+    chat_type: 'group' | 'private';
+    number: string;
+    trigger_mode: string;
+    dida_enabled: boolean;
+    ai_decision_prompt: string;
+    action_prompt: string;
+    reply_prompt: string;
+    action_temperature: number;
+    reply_temperature: number;
+};
 
+type SummaryConfig = {
+    model: string;
+    temperature: number;
+    max_line_chars: number;
+    max_lines: number;
+    summary_chat_scope: 'group' | 'private' | 'all';
+    summary_group_filter_mode: 'all' | 'include' | 'exclude';
+    summary_group_ids: string[];
+    summary_global_overview: boolean;
+    summary_send_mode: 'single_message' | 'multi_message';
+    summary_group_reduce_enabled: boolean;
+};
+
+type ForwardConfig = {
+    model: string;
+    decision_model?: string;
+    temperature: number;
+    monitor_group_qq_number: string[];
+    forward_decision_prompt: string;
+};
+
+type AutoReplyConfig = {
+    model: string;
+    decision_model?: string;
+    temperature: number;
+    context_history_limit: number;
+    context_max_chars: number;
+    context_window_seconds: number;
+    min_reply_interval_seconds: number;
+    flush_check_interval_seconds: number;
+    pending_expire_seconds: number;
+    bypass_cooldown_when_at_bot: boolean;
+    pending_max_messages: number;
+    rules: AutoReplyRule[];
+};
+
+type DidaConfig = {
+    model: string;
+    decision_model?: string;
+    temperature: number;
+    bot_qq: string;
+    admin_qqs: string[];
+    context_history_limit: number;
+    context_max_chars: number;
+    context_window_seconds: number;
+    min_reply_interval_seconds: number;
+    flush_check_interval_seconds: number;
+    pending_expire_seconds: number;
+    bypass_cooldown_when_at_bot: boolean;
+    pending_max_messages: number;
+    rules: DidaRule[];
+};
+
+type FixedSection = {
+    file_name: string;
+    config: JsonObject;
+};
+
+const FIXED_AGENT_OPTIONS: Array<{ key: FixedAgentKey; label: string }> = [
+    { key: 'summary_config', label: 'Summary Agent' },
+    { key: 'forward_config', label: 'Forward Agent' },
+    { key: 'auto_reply_config', label: 'Auto Reply Agent' },
+    { key: 'dida_agent_config', label: 'Dida Agent' },
+];
+
+function asObject(value: JsonValue | undefined): JsonObject {
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : {};
+}
+
+function toStringArray(value: JsonValue | undefined): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((item) => String(item));
+}
+
+function toNumber(value: JsonValue | undefined, fallback: number): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function toBool(value: JsonValue | undefined, fallback: boolean): boolean {
+    if (typeof value === 'boolean') return value;
+    return fallback;
+}
+
+function toStringValue(value: JsonValue | undefined, fallback = ''): string {
+    if (typeof value === 'string') return value;
+    if (value === undefined || value === null) return fallback;
+    return String(value);
+}
+
+function makeDefaultAutoRule(): AutoReplyRule {
     return {
-        timezone: String(config.timezone),
-        schedules: config.schedules as unknown as ScheduleConfig[],
+        enabled: true,
+        chat_type: 'group',
+        number: '',
+        trigger_mode: 'always',
+        keywords: [],
+        ai_decision_prompt: '',
+        reply_prompt: '',
+        temperature: 0.4,
     };
 }
 
-function normalizeStepsTree(nodes?: StepNode[]): StepNode[] {
-    if (!nodes) return [];
-    return nodes.map((node) => ({
-        id: node.id || newId(),
-        kind: node.kind,
-        action: node.action || '',
-        params: asObject(node.params),
-        name: node.name || '',
-        condition: node.condition || { source: 'env', key: '', op: 'eq', value: '' },
-        children: normalizeStepsTree(node.children),
-        then_steps: normalizeStepsTree(node.then_steps),
-        else_steps: normalizeStepsTree(node.else_steps),
-    }));
+function makeDefaultDidaRule(): DidaRule {
+    return {
+        enabled: true,
+        chat_type: 'group',
+        number: '',
+        trigger_mode: 'ai_decide',
+        dida_enabled: true,
+        ai_decision_prompt: '',
+        action_prompt: '',
+        reply_prompt: '',
+        action_temperature: 0,
+        reply_temperature: 0.5,
+    };
+}
+
+function defaultSections(): Record<FixedAgentKey, FixedSection> {
+    return {
+        summary_config: {
+            file_name: 'summary.py',
+            config: {
+                model: '',
+                temperature: 0.2,
+                max_line_chars: 300,
+                max_lines: 500,
+                summary_chat_scope: 'group',
+                summary_group_filter_mode: 'all',
+                summary_group_ids: [],
+                summary_global_overview: true,
+                summary_send_mode: 'multi_message',
+                summary_group_reduce_enabled: true,
+            },
+        },
+        forward_config: {
+            file_name: 'forward.py',
+            config: {
+                model: '',
+                decision_model: '',
+                temperature: 0,
+                monitor_group_qq_number: [],
+                forward_decision_prompt: '',
+            },
+        },
+        auto_reply_config: {
+            file_name: 'auto_reply.py',
+            config: {
+                model: '',
+                decision_model: '',
+                temperature: 0.4,
+                context_history_limit: 50,
+                context_max_chars: 2000,
+                context_window_seconds: 0,
+                min_reply_interval_seconds: 10,
+                flush_check_interval_seconds: 10,
+                pending_expire_seconds: 3600,
+                bypass_cooldown_when_at_bot: false,
+                pending_max_messages: 50,
+                rules: [makeDefaultAutoRule()],
+            },
+        },
+        dida_agent_config: {
+            file_name: 'dida_agent.py',
+            config: {
+                model: '',
+                decision_model: '',
+                temperature: 0.1,
+                bot_qq: '',
+                admin_qqs: [],
+                context_history_limit: 50,
+                context_max_chars: 2000,
+                context_window_seconds: 0,
+                min_reply_interval_seconds: 10,
+                flush_check_interval_seconds: 10,
+                pending_expire_seconds: 3600,
+                bypass_cooldown_when_at_bot: true,
+                pending_max_messages: 50,
+                rules: [makeDefaultDidaRule()],
+            },
+        },
+    };
+}
+
+function normalizeFixedSections(agent: AgentConfigRoot): Record<FixedAgentKey, FixedSection> {
+    const defaults = defaultSections();
+    for (const key of FIXED_AGENT_OPTIONS.map((x) => x.key)) {
+        const rawSection = asObject(agent[key]);
+        const fileName = toStringValue(rawSection.file_name, defaults[key].file_name);
+        const cfg = asObject(rawSection.config);
+        defaults[key] = {
+            file_name: fileName || defaults[key].file_name,
+            config: { ...defaults[key].config, ...cfg },
+        };
+    }
+    return defaults;
+}
+
+function cloneAgent(agent: AgentConfigRoot): AgentConfigRoot {
+    return JSON.parse(JSON.stringify(agent)) as AgentConfigRoot;
 }
 
 function StringListEditor({
-    value,
+    values,
     onChange,
 }: {
-    value: string[];
+    values: string[];
     onChange: (next: string[]) => void;
 }) {
     return (
         <div className="string-list">
-            {value.map((item, idx) => (
-                <div key={`${item}_${idx}`} className="row gap-8">
+            {values.map((item, idx) => (
+                <div className="row gap-8" key={`${item}_${idx}`}>
                     <input
                         value={item}
                         onChange={(e) => {
-                            const next = [...value];
+                            const next = [...values];
                             next[idx] = e.target.value;
                             onChange(next);
                         }}
                     />
                     <button
                         onClick={() => {
-                            const next = [...value];
+                            const next = [...values];
                             next.splice(idx, 1);
                             onChange(next);
                         }}
@@ -174,459 +268,648 @@ function StringListEditor({
                     </button>
                 </div>
             ))}
-            <button onClick={() => onChange([...value, ''])}>+ 新增</button>
+            <button onClick={() => onChange([...values, ''])}>+ 添加</button>
         </div>
     );
 }
 
-function ActionParamsEditor({
-    action,
-    params,
-    onChange,
-}: {
-    action: string;
-    params: JsonObject;
-    onChange: (params: JsonObject) => void;
-}) {
-    const fields = ACTION_PARAM_SCHEMAS[action];
-    if (!fields) {
-        return (
-            <div>
-                <p>自定义动作参数</p>
-                <JsonFormEditor value={params} onChange={(next) => onChange(asObject(next))} depth={0} />
-            </div>
-        );
-    }
-
+function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (next: SummaryConfig) => void }) {
     return (
         <div className="grid2">
-            {fields.map((field) => {
-                const current = params[field.key] as JsonValue;
-                if (field.kind === 'text') {
-                    return (
-                        <div key={field.key}>
-                            <label>{field.label}</label>
-                            <input
-                                value={typeof current === 'string' ? current : ''}
-                                onChange={(e) => onChange({ ...params, [field.key]: e.target.value })}
-                            />
-                        </div>
-                    );
-                }
-                if (field.kind === 'number') {
-                    return (
-                        <div key={field.key}>
-                            <label>{field.label}</label>
-                            <input
-                                type="number"
-                                value={typeof current === 'number' ? current : 0}
-                                onChange={(e) => onChange({ ...params, [field.key]: Number(e.target.value) })}
-                            />
-                        </div>
-                    );
-                }
-                if (field.kind === 'boolean') {
-                    return (
-                        <label key={field.key} className="row gap-8">
-                            <input
-                                type="checkbox"
-                                checked={Boolean(current)}
-                                onChange={(e) => onChange({ ...params, [field.key]: e.target.checked })}
-                            />
-                            {field.label}
-                        </label>
-                    );
-                }
-                if (field.kind === 'string_list') {
-                    return (
-                        <div key={field.key} className="full-row">
-                            <label>{field.label}</label>
-                            <StringListEditor
-                                value={Array.isArray(current) ? current.map(String) : []}
-                                onChange={(next) => onChange({ ...params, [field.key]: next })}
-                            />
-                        </div>
-                    );
-                }
-                return (
-                    <div key={field.key}>
-                        <label>{field.label}</label>
-                        <select
-                            value={typeof current === 'string' ? current : field.options[0]}
-                            onChange={(e) => onChange({ ...params, [field.key]: e.target.value })}
-                        >
-                            {field.options.map((option) => (
-                                <option key={option} value={option}>
-                                    {option}
-                                </option>
-                            ))}
-                        </select>
-                    </div>
-                );
-            })}
-        </div>
-    );
-}
-
-function JsonFormEditor({
-    value,
-    onChange,
-    depth,
-}: {
-    value: JsonValue;
-    onChange: (next: JsonValue) => void;
-    depth: number;
-}) {
-    const valueType = getValueType(value);
-
-    if (valueType === 'string') {
-        return (
-            <input
-                value={String(value)}
-                onChange={(e) => onChange(e.target.value)}
-                className={depth > 0 ? 'compact' : ''}
-            />
-        );
-    }
-
-    if (valueType === 'number') {
-        return (
-            <input
-                type="number"
-                value={Number(value)}
-                onChange={(e) => onChange(Number(e.target.value))}
-                className={depth > 0 ? 'compact' : ''}
-            />
-        );
-    }
-
-    if (valueType === 'boolean') {
-        return (
+            <div>
+                <label>model</label>
+                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+            </div>
+            <div>
+                <label>temperature</label>
+                <input
+                    type="number"
+                    step="0.1"
+                    value={value.temperature}
+                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>max_line_chars</label>
+                <input
+                    type="number"
+                    value={value.max_line_chars}
+                    onChange={(e) => onChange({ ...value, max_line_chars: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>max_lines</label>
+                <input
+                    type="number"
+                    value={value.max_lines}
+                    onChange={(e) => onChange({ ...value, max_lines: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>summary_chat_scope</label>
+                <select
+                    value={value.summary_chat_scope}
+                    onChange={(e) =>
+                        onChange({ ...value, summary_chat_scope: e.target.value as SummaryConfig['summary_chat_scope'] })
+                    }
+                >
+                    <option value="group">group</option>
+                    <option value="private">private</option>
+                    <option value="all">all</option>
+                </select>
+            </div>
+            <div>
+                <label>summary_group_filter_mode</label>
+                <select
+                    value={value.summary_group_filter_mode}
+                    onChange={(e) =>
+                        onChange({
+                            ...value,
+                            summary_group_filter_mode: e.target.value as SummaryConfig['summary_group_filter_mode'],
+                        })
+                    }
+                >
+                    <option value="all">all</option>
+                    <option value="include">include</option>
+                    <option value="exclude">exclude</option>
+                </select>
+            </div>
+            <div className="full-row">
+                <label>summary_group_ids</label>
+                <StringListEditor
+                    values={value.summary_group_ids}
+                    onChange={(summary_group_ids) => onChange({ ...value, summary_group_ids })}
+                />
+            </div>
             <label className="row gap-8">
                 <input
                     type="checkbox"
-                    checked={Boolean(value)}
-                    onChange={(e) => onChange(e.target.checked)}
+                    checked={value.summary_global_overview}
+                    onChange={(e) => onChange({ ...value, summary_global_overview: e.target.checked })}
                 />
-                <span>{Boolean(value) ? 'true' : 'false'}</span>
+                summary_global_overview
             </label>
-        );
-    }
-
-    if (valueType === 'null') {
-        return <span className="muted">null（请改类型）</span>;
-    }
-
-    if (valueType === 'array') {
-        const arr = value as JsonValue[];
-        return (
-            <div className="array-box">
-                {arr.map((item, idx) => (
-                    <div key={idx} className="array-item">
-                        <JsonFormEditor
-                            value={item}
-                            depth={depth + 1}
-                            onChange={(next) => {
-                                const updated = [...arr];
-                                updated[idx] = next;
-                                onChange(updated);
-                            }}
-                        />
-                        <button
-                            onClick={() => {
-                                const updated = [...arr];
-                                updated.splice(idx, 1);
-                                onChange(updated);
-                            }}
-                        >
-                            删除
-                        </button>
-                    </div>
-                ))}
-                <div className="row gap-8 wrap">
-                    {(['string', 'number', 'boolean', 'object', 'array'] as const).map((kind) => (
-                        <button key={kind} onClick={() => onChange([...arr, createDefaultByKind(kind)])}>
-                            + {kind}
-                        </button>
-                    ))}
-                </div>
+            <div>
+                <label>summary_send_mode</label>
+                <select
+                    value={value.summary_send_mode}
+                    onChange={(e) =>
+                        onChange({ ...value, summary_send_mode: e.target.value as SummaryConfig['summary_send_mode'] })
+                    }
+                >
+                    <option value="single_message">single_message</option>
+                    <option value="multi_message">multi_message</option>
+                </select>
             </div>
-        );
-    }
+            <label className="row gap-8">
+                <input
+                    type="checkbox"
+                    checked={value.summary_group_reduce_enabled}
+                    onChange={(e) => onChange({ ...value, summary_group_reduce_enabled: e.target.checked })}
+                />
+                summary_group_reduce_enabled
+            </label>
+        </div>
+    );
+}
 
-    const obj = value as JsonObject;
+function ForwardForm({ value, onChange }: { value: ForwardConfig; onChange: (next: ForwardConfig) => void }) {
     return (
-        <div className="object-box">
-            {Object.entries(obj).map(([k, v]) => (
-                <div key={k} className="object-item">
-                    <label>{k}</label>
-                    <div className="row gap-8 align-start">
-                        <div className="grow">
-                            <JsonFormEditor
-                                value={v}
-                                depth={depth + 1}
-                                onChange={(next) => onChange({ ...obj, [k]: next })}
-                            />
-                        </div>
+        <div className="grid2">
+            <div>
+                <label>model</label>
+                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+            </div>
+            <div>
+                <label>decision_model</label>
+                <input
+                    value={value.decision_model || ''}
+                    onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
+                />
+            </div>
+            <div>
+                <label>temperature</label>
+                <input
+                    type="number"
+                    step="0.1"
+                    value={value.temperature}
+                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                />
+            </div>
+            <div className="full-row">
+                <label>monitor_group_qq_number</label>
+                <StringListEditor
+                    values={value.monitor_group_qq_number}
+                    onChange={(monitor_group_qq_number) => onChange({ ...value, monitor_group_qq_number })}
+                />
+            </div>
+            <div className="full-row">
+                <label>forward_decision_prompt</label>
+                <textarea
+                    rows={10}
+                    value={value.forward_decision_prompt}
+                    onChange={(e) => onChange({ ...value, forward_decision_prompt: e.target.value })}
+                />
+            </div>
+        </div>
+    );
+}
+
+function AutoReplyRulesEditor({
+    rules,
+    onChange,
+}: {
+    rules: AutoReplyRule[];
+    onChange: (next: AutoReplyRule[]) => void;
+}) {
+    return (
+        <div className="rule-box">
+            {rules.map((rule, idx) => (
+                <div key={idx} className="rule-item">
+                    <div className="row between">
+                        <strong>Rule {idx + 1}</strong>
                         <button
                             onClick={() => {
-                                const next: JsonObject = { ...obj };
-                                delete next[k];
+                                const next = [...rules];
+                                next.splice(idx, 1);
                                 onChange(next);
                             }}
                         >
-                            删除键
+                            删除 Rule
                         </button>
                     </div>
-                </div>
-            ))}
-            <ObjectAddField
-                onAdd={(name, kind) => {
-                    if (!name.trim()) return;
-                    if (name in obj) return;
-                    onChange({ ...obj, [name]: createDefaultByKind(kind) });
-                }}
-            />
-        </div>
-    );
-}
-
-function ObjectAddField({
-    onAdd,
-}: {
-    onAdd: (name: string, kind: 'string' | 'number' | 'boolean' | 'object' | 'array') => void;
-}) {
-    const [name, setName] = useState('');
-    const [kind, setKind] = useState<'string' | 'number' | 'boolean' | 'object' | 'array'>('string');
-
-    return (
-        <div className="row gap-8 wrap">
-            <input placeholder="新字段名" value={name} onChange={(e) => setName(e.target.value)} />
-            <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-                <option value="string">string</option>
-                <option value="number">number</option>
-                <option value="boolean">boolean</option>
-                <option value="object">object</option>
-                <option value="array">array</option>
-            </select>
-            <button
-                onClick={() => {
-                    onAdd(name, kind);
-                    setName('');
-                }}
-            >
-                + 添加字段
-            </button>
-        </div>
-    );
-}
-
-function NodeEditor({
-    nodes,
-    onChange,
-    title,
-}: {
-    nodes: StepNode[];
-    onChange: (nodes: StepNode[]) => void;
-    title: string;
-}) {
-    const [dragIndex, setDragIndex] = useState<number | null>(null);
-
-    const addNode = (kind: StepNode['kind']) => {
-        onChange([
-            ...nodes,
-            {
-                id: newId(),
-                kind,
-                action: 'core.send_group_msg',
-                params: {},
-                name: '',
-                condition: { source: 'env', key: '', op: 'eq', value: '' },
-                children: [],
-                then_steps: [],
-                else_steps: [],
-            },
-        ]);
-    };
-
-    const updateNode = (idx: number, patch: Partial<StepNode>) => {
-        const next = [...nodes];
-        next[idx] = { ...next[idx], ...patch };
-        onChange(next);
-    };
-
-    const removeNode = (idx: number) => {
-        const next = [...nodes];
-        next.splice(idx, 1);
-        onChange(next);
-    };
-
-    const onDrop = (idx: number) => {
-        if (dragIndex === null || dragIndex === idx) return;
-        const next = [...nodes];
-        const [item] = next.splice(dragIndex, 1);
-        next.splice(idx, 0, item);
-        onChange(next);
-        setDragIndex(null);
-    };
-
-    return (
-        <div className="card">
-            <div className="row between">
-                <strong>{title}</strong>
-                <div className="row gap-8">
-                    <button onClick={() => addNode('action')}>+ Action</button>
-                    <button onClick={() => addNode('group')}>+ Group</button>
-                    <button onClick={() => addNode('if')}>+ If</button>
-                </div>
-            </div>
-            {nodes.map((node, idx) => (
-                <div
-                    key={node.id}
-                    className="node"
-                    draggable
-                    onDragStart={() => setDragIndex(idx)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => onDrop(idx)}
-                >
-                    <div className="row between">
-                        <strong>{node.kind.toUpperCase()}</strong>
-                        <button onClick={() => removeNode(idx)}>删除</button>
-                    </div>
-                    {node.kind === 'action' && (
-                        <>
-                            <label>动作</label>
-                            <select
-                                value={node.action || 'custom'}
-                                onChange={(e) => updateNode(idx, { action: e.target.value })}
-                            >
-                                {Object.keys(ACTION_PARAM_SCHEMAS).map((actionKey) => (
-                                    <option key={actionKey} value={actionKey}>
-                                        {actionKey}
-                                    </option>
-                                ))}
-                                <option value="custom">custom</option>
-                            </select>
-                            {(node.action || '') === 'custom' ? (
-                                <input
-                                    placeholder="输入完整 action id"
-                                    value={node.action || ''}
-                                    onChange={(e) => updateNode(idx, { action: e.target.value })}
-                                />
-                            ) : null}
-                            <ActionParamsEditor
-                                action={node.action || ''}
-                                params={asObject(node.params)}
-                                onChange={(params) => updateNode(idx, { params })}
-                            />
-                        </>
-                    )}
-                    {node.kind === 'group' && (
-                        <>
-                            <label>组名称</label>
+                    <div className="grid2">
+                        <label className="row gap-8">
                             <input
-                                placeholder="group name"
-                                value={node.name || ''}
-                                onChange={(e) => updateNode(idx, { name: e.target.value })}
+                                type="checkbox"
+                                checked={rule.enabled}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, enabled: e.target.checked };
+                                    onChange(next);
+                                }}
                             />
-                            <NodeEditor
-                                title="Group Children"
-                                nodes={node.children || []}
-                                onChange={(children) => updateNode(idx, { children })}
+                            enabled
+                        </label>
+                        <div>
+                            <label>chat_type</label>
+                            <select
+                                value={rule.chat_type}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, chat_type: e.target.value as 'group' | 'private' };
+                                    onChange(next);
+                                }}
+                            >
+                                <option value="group">group</option>
+                                <option value="private">private</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>number</label>
+                            <input
+                                value={rule.number}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, number: e.target.value };
+                                    onChange(next);
+                                }}
                             />
-                        </>
-                    )}
-                    {node.kind === 'if' && (
-                        <>
-                            <div className="grid4">
-                                <div>
-                                    <label>source</label>
-                                    <select
-                                        value={node.condition?.source || 'env'}
-                                        onChange={(e) =>
-                                            updateNode(idx, {
-                                                condition: { ...(node.condition || {}), source: e.target.value },
-                                            })
-                                        }
-                                    >
-                                        <option value="env">env</option>
-                                        <option value="context">context</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>key</label>
-                                    <input
-                                        placeholder="key"
-                                        value={node.condition?.key || ''}
-                                        onChange={(e) =>
-                                            updateNode(idx, {
-                                                condition: { ...(node.condition || {}), key: e.target.value },
-                                            })
-                                        }
-                                    />
-                                </div>
-                                <div>
-                                    <label>op</label>
-                                    <select
-                                        value={node.condition?.op || 'eq'}
-                                        onChange={(e) =>
-                                            updateNode(idx, {
-                                                condition: { ...(node.condition || {}), op: e.target.value },
-                                            })
-                                        }
-                                    >
-                                        <option value="eq">eq</option>
-                                        <option value="ne">ne</option>
-                                        <option value="contains">contains</option>
-                                        <option value="in">in</option>
-                                        <option value="truthy">truthy</option>
-                                        <option value="falsy">falsy</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>value</label>
-                                    <input
-                                        placeholder="value"
-                                        value={node.condition?.value || ''}
-                                        onChange={(e) =>
-                                            updateNode(idx, {
-                                                condition: { ...(node.condition || {}), value: e.target.value },
-                                            })
-                                        }
-                                    />
-                                </div>
-                            </div>
-                            <NodeEditor
-                                title="THEN"
-                                nodes={node.then_steps || []}
-                                onChange={(then_steps) => updateNode(idx, { then_steps })}
+                        </div>
+                        <div>
+                            <label>trigger_mode</label>
+                            <select
+                                value={rule.trigger_mode}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, trigger_mode: e.target.value };
+                                    onChange(next);
+                                }}
+                            >
+                                <option value="always">always</option>
+                                <option value="keyword">keyword</option>
+                                <option value="at_bot">at_bot</option>
+                                <option value="ai_decide">ai_decide</option>
+                                <option value="ai_decide || keyword">ai_decide || keyword</option>
+                                <option value="at_bot || keyword">at_bot || keyword</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>temperature (可选)</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={rule.temperature ?? 0.4}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, temperature: Number(e.target.value) };
+                                    onChange(next);
+                                }}
                             />
-                            <NodeEditor
-                                title="ELSE"
-                                nodes={node.else_steps || []}
-                                onChange={(else_steps) => updateNode(idx, { else_steps })}
+                        </div>
+                        <div className="full-row">
+                            <label>keywords</label>
+                            <StringListEditor
+                                values={rule.keywords}
+                                onChange={(keywords) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, keywords };
+                                    onChange(next);
+                                }}
                             />
-                        </>
-                    )}
+                        </div>
+                        <div className="full-row">
+                            <label>ai_decision_prompt</label>
+                            <textarea
+                                rows={6}
+                                value={rule.ai_decision_prompt}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, ai_decision_prompt: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>reply_prompt</label>
+                            <textarea
+                                rows={6}
+                                value={rule.reply_prompt}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, reply_prompt: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                    </div>
                 </div>
             ))}
+            <button onClick={() => onChange([...rules, makeDefaultAutoRule()])}>+ 添加 Rule</button>
+        </div>
+    );
+}
+
+function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (next: DidaRule[]) => void }) {
+    return (
+        <div className="rule-box">
+            {rules.map((rule, idx) => (
+                <div key={idx} className="rule-item">
+                    <div className="row between">
+                        <strong>Rule {idx + 1}</strong>
+                        <button
+                            onClick={() => {
+                                const next = [...rules];
+                                next.splice(idx, 1);
+                                onChange(next);
+                            }}
+                        >
+                            删除 Rule
+                        </button>
+                    </div>
+                    <div className="grid2">
+                        <label className="row gap-8">
+                            <input
+                                type="checkbox"
+                                checked={rule.enabled}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, enabled: e.target.checked };
+                                    onChange(next);
+                                }}
+                            />
+                            enabled
+                        </label>
+                        <label className="row gap-8">
+                            <input
+                                type="checkbox"
+                                checked={rule.dida_enabled}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, dida_enabled: e.target.checked };
+                                    onChange(next);
+                                }}
+                            />
+                            dida_enabled
+                        </label>
+                        <div>
+                            <label>chat_type</label>
+                            <select
+                                value={rule.chat_type}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, chat_type: e.target.value as 'group' | 'private' };
+                                    onChange(next);
+                                }}
+                            >
+                                <option value="group">group</option>
+                                <option value="private">private</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>number</label>
+                            <input
+                                value={rule.number}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, number: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div>
+                            <label>trigger_mode</label>
+                            <select
+                                value={rule.trigger_mode}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, trigger_mode: e.target.value };
+                                    onChange(next);
+                                }}
+                            >
+                                <option value="ai_decide">ai_decide</option>
+                                <option value="always">always</option>
+                                <option value="keyword">keyword</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>action_temperature</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={rule.action_temperature}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, action_temperature: Number(e.target.value) };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div>
+                            <label>reply_temperature</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={rule.reply_temperature}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, reply_temperature: Number(e.target.value) };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>ai_decision_prompt</label>
+                            <textarea
+                                rows={6}
+                                value={rule.ai_decision_prompt}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, ai_decision_prompt: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>action_prompt</label>
+                            <textarea
+                                rows={6}
+                                value={rule.action_prompt}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, action_prompt: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>reply_prompt</label>
+                            <textarea
+                                rows={6}
+                                value={rule.reply_prompt}
+                                onChange={(e) => {
+                                    const next = [...rules];
+                                    next[idx] = { ...rule, reply_prompt: e.target.value };
+                                    onChange(next);
+                                }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            ))}
+            <button onClick={() => onChange([...rules, makeDefaultDidaRule()])}>+ 添加 Rule</button>
+        </div>
+    );
+}
+
+function AutoReplyForm({ value, onChange }: { value: AutoReplyConfig; onChange: (next: AutoReplyConfig) => void }) {
+    return (
+        <div className="grid2">
+            <div>
+                <label>model</label>
+                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+            </div>
+            <div>
+                <label>decision_model</label>
+                <input
+                    value={value.decision_model || ''}
+                    onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
+                />
+            </div>
+            <div>
+                <label>temperature</label>
+                <input
+                    type="number"
+                    step="0.1"
+                    value={value.temperature}
+                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>context_history_limit</label>
+                <input
+                    type="number"
+                    value={value.context_history_limit}
+                    onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>context_max_chars</label>
+                <input
+                    type="number"
+                    value={value.context_max_chars}
+                    onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>context_window_seconds</label>
+                <input
+                    type="number"
+                    value={value.context_window_seconds}
+                    onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>min_reply_interval_seconds</label>
+                <input
+                    type="number"
+                    value={value.min_reply_interval_seconds}
+                    onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>flush_check_interval_seconds</label>
+                <input
+                    type="number"
+                    value={value.flush_check_interval_seconds}
+                    onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>pending_expire_seconds</label>
+                <input
+                    type="number"
+                    value={value.pending_expire_seconds}
+                    onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>pending_max_messages</label>
+                <input
+                    type="number"
+                    value={value.pending_max_messages}
+                    onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
+                />
+            </div>
+            <label className="row gap-8">
+                <input
+                    type="checkbox"
+                    checked={value.bypass_cooldown_when_at_bot}
+                    onChange={(e) => onChange({ ...value, bypass_cooldown_when_at_bot: e.target.checked })}
+                />
+                bypass_cooldown_when_at_bot
+            </label>
+            <div className="full-row">
+                <label>rules</label>
+                <AutoReplyRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
+            </div>
+        </div>
+    );
+}
+
+function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: DidaConfig) => void }) {
+    return (
+        <div className="grid2">
+            <div>
+                <label>model</label>
+                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+            </div>
+            <div>
+                <label>decision_model</label>
+                <input
+                    value={value.decision_model || ''}
+                    onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
+                />
+            </div>
+            <div>
+                <label>temperature</label>
+                <input
+                    type="number"
+                    step="0.1"
+                    value={value.temperature}
+                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>bot_qq</label>
+                <input value={value.bot_qq} onChange={(e) => onChange({ ...value, bot_qq: e.target.value })} />
+            </div>
+            <div className="full-row">
+                <label>admin_qqs</label>
+                <StringListEditor values={value.admin_qqs} onChange={(admin_qqs) => onChange({ ...value, admin_qqs })} />
+            </div>
+            <div>
+                <label>context_history_limit</label>
+                <input
+                    type="number"
+                    value={value.context_history_limit}
+                    onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>context_max_chars</label>
+                <input
+                    type="number"
+                    value={value.context_max_chars}
+                    onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>context_window_seconds</label>
+                <input
+                    type="number"
+                    value={value.context_window_seconds}
+                    onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>min_reply_interval_seconds</label>
+                <input
+                    type="number"
+                    value={value.min_reply_interval_seconds}
+                    onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>flush_check_interval_seconds</label>
+                <input
+                    type="number"
+                    value={value.flush_check_interval_seconds}
+                    onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>pending_expire_seconds</label>
+                <input
+                    type="number"
+                    value={value.pending_expire_seconds}
+                    onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
+                />
+            </div>
+            <div>
+                <label>pending_max_messages</label>
+                <input
+                    type="number"
+                    value={value.pending_max_messages}
+                    onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
+                />
+            </div>
+            <label className="row gap-8">
+                <input
+                    type="checkbox"
+                    checked={value.bypass_cooldown_when_at_bot}
+                    onChange={(e) => onChange({ ...value, bypass_cooldown_when_at_bot: e.target.checked })}
+                />
+                bypass_cooldown_when_at_bot
+            </label>
+            <div className="full-row">
+                <label>rules</label>
+                <DidaRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
+            </div>
         </div>
     );
 }
 
 export default function App() {
     const [tab, setTab] = useState<TabKey>('basic');
-    const [agent, setAgent] = useState<AgentConfigRoot>({});
-    const [rawYaml, setRawYaml] = useState('');
     const [status, setStatus] = useState('idle');
     const [error, setError] = useState('');
 
     const [llmApiKey, setLlmApiKey] = useState('');
     const [llmApiBaseUrl, setLlmApiBaseUrl] = useState('');
 
-    const [activeSection, setActiveSection] = useState('');
-    const [selectedSchedule, setSelectedSchedule] = useState(0);
-    const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+    const [agent, setAgent] = useState<AgentConfigRoot>({});
+    const [selectedAgent, setSelectedAgent] = useState<FixedAgentKey>('summary_config');
 
     const [deployForm, setDeployForm] = useState({
         host: '139.196.90.36',
@@ -643,159 +926,58 @@ export default function App() {
     const [deployLogs, setDeployLogs] = useState<string[]>([]);
     const [snapshots, setSnapshots] = useState<string[]>([]);
 
-    const scheduler = useMemo(() => ensureScheduler(agent), [agent]);
-    const schedules = scheduler.schedules;
+    const fixedSections = useMemo(() => normalizeFixedSections(agent), [agent]);
 
     useEffect(() => {
         (async () => {
             try {
                 setStatus('loading');
                 const all = await getAllConfig();
-                const raw = await getAgentRaw();
-                setAgent((all.agent || {}) as AgentConfigRoot);
-                setRawYaml(raw.raw_yaml || '');
                 setLlmApiKey(all.env?.LLM_API_KEY || '');
                 setLlmApiBaseUrl(all.env?.LLM_API_BASE_URL || '');
-
-                const sections = Object.keys(all.agent || {});
-                if (sections.length > 0) {
-                    setActiveSection(sections[0]);
-                }
+                setAgent(all.agent || {});
                 const history = await listSnapshots();
                 setSnapshots(history.snapshots || []);
                 setStatus('ready');
             } catch (e) {
-                setError(String(e));
                 setStatus('error');
+                setError(String(e));
             }
         })();
     }, []);
 
     useEffect(() => {
-        const id = setTimeout(() => {
+        const timer = setTimeout(() => {
             if (status !== 'ready') return;
             saveEnv(llmApiKey, llmApiBaseUrl).catch((e) => setError(String(e)));
         }, 300);
-        return () => clearTimeout(id);
+        return () => clearTimeout(timer);
     }, [llmApiKey, llmApiBaseUrl, status]);
 
-    const updateAgent = (next: AgentConfigRoot) => {
-        setAgent(cloneValue(next));
+    const updateFixedSectionConfig = (key: FixedAgentKey, cfg: JsonObject) => {
+        const next = cloneAgent(agent);
+        next[key] = {
+            file_name: fixedSections[key].file_name,
+            config: cfg,
+        };
+        setAgent(next);
     };
 
     const saveAgentFull = async () => {
         try {
-            await saveAgent(agent as Record<string, unknown>);
+            const payload = cloneAgent(agent);
+            for (const fixedKey of FIXED_AGENT_OPTIONS.map((x) => x.key)) {
+                payload[fixedKey] = {
+                    file_name: fixedSections[fixedKey].file_name,
+                    config: fixedSections[fixedKey].config,
+                };
+            }
+            await saveAgent(payload as Record<string, unknown>);
             setStatus('saved');
         } catch (e) {
             setError(String(e));
         }
     };
-
-    const saveRaw = async () => {
-        try {
-            await saveAgentRaw(rawYaml);
-            const all = await getAllConfig();
-            setAgent((all.agent || {}) as AgentConfigRoot);
-            setStatus('saved');
-        } catch (e) {
-            setError(String(e));
-        }
-    };
-
-    const addSection = () => {
-        const base = 'new_section';
-        let index = 1;
-        let name = `${base}_${index}`;
-        while (Object.keys(agent).includes(name)) {
-            index += 1;
-            name = `${base}_${index}`;
-        }
-        const next: AgentConfigRoot = {
-            ...agent,
-            [name]: {
-                file_name: `${name}.py`,
-                config: {},
-            },
-        };
-        updateAgent(next);
-        setActiveSection(name);
-    };
-
-    const removeSection = (name: string) => {
-        const next: AgentConfigRoot = cloneValue(agent);
-        delete next[name];
-        updateAgent(next);
-        const sections = Object.keys(next);
-        setActiveSection(sections[0] || '');
-    };
-
-    const updateSectionValue = (name: string, value: JsonValue) => {
-        const next: AgentConfigRoot = cloneValue(agent);
-        next[name] = value;
-        updateAgent(next);
-    };
-
-    const updateSchedules = (nextSchedules: ScheduleConfig[]) => {
-        const next = cloneValue(agent as AgentConfigRoot);
-        const schedulerManager = asObject(next.scheduler_manager);
-        const config = asObject(schedulerManager.config);
-        config.timezone = scheduler.timezone;
-        config.schedules = nextSchedules as unknown as JsonValue;
-        schedulerManager.file_name = (schedulerManager.file_name as string) || 'scheduler_manager.py';
-        schedulerManager.config = config;
-        next.scheduler_manager = schedulerManager;
-        updateAgent(next);
-    };
-
-    const updateTimezone = (timezone: string) => {
-        const next = cloneValue(agent as AgentConfigRoot);
-        const schedulerManager = asObject(next.scheduler_manager);
-        const config = asObject(schedulerManager.config);
-        config.timezone = timezone;
-        config.schedules = schedules as unknown as JsonValue;
-        schedulerManager.file_name = (schedulerManager.file_name as string) || 'scheduler_manager.py';
-        schedulerManager.config = config;
-        next.scheduler_manager = schedulerManager;
-        updateAgent(next);
-    };
-
-    const addSchedule = () => {
-        updateSchedules([
-            ...schedules,
-            {
-                name: `schedule_${schedules.length + 1}`,
-                type: 'cron',
-                expression: '0 8 * * *',
-                enabled: true,
-                steps_tree: [],
-                steps: [],
-            },
-        ]);
-        setSelectedSchedule(schedules.length);
-    };
-
-    const saveScheduler = async () => {
-        try {
-            const compiled = await compileSchedules(schedules);
-            updateSchedules(compiled.schedules);
-            await saveAgent(agent as Record<string, unknown>);
-            setStatus('saved');
-        } catch (e) {
-            setError(String(e));
-        }
-    };
-
-    const loadTimeline = async () => {
-        try {
-            const ret = await getTimeline(scheduler.timezone, schedules, 20);
-            setTimeline(ret.events);
-        } catch (e) {
-            setError(String(e));
-        }
-    };
-
-    const currentSchedule = schedules[selectedSchedule];
 
     const runConnectionTest = async () => {
         try {
@@ -815,22 +997,139 @@ export default function App() {
         }
     };
 
-    const reloadHistory = async () => {
-        const history = await listSnapshots();
-        setSnapshots(history.snapshots || []);
-    };
-
     const restore = async (snapshot: string, target: 'env' | 'agent') => {
         try {
             await restoreSnapshot(snapshot, target);
-            await reloadHistory();
+            const all = await getAllConfig();
+            setLlmApiKey(all.env?.LLM_API_KEY || '');
+            setLlmApiBaseUrl(all.env?.LLM_API_BASE_URL || '');
+            setAgent(all.agent || {});
+            const history = await listSnapshots();
+            setSnapshots(history.snapshots || []);
             setStatus('restored');
         } catch (e) {
             setError(String(e));
         }
     };
 
-    const sectionValue = activeSection ? (agent[activeSection] as JsonValue) : {};
+    const summaryConfig: SummaryConfig = {
+        model: toStringValue(fixedSections.summary_config.config.model),
+        temperature: toNumber(fixedSections.summary_config.config.temperature, 0.2),
+        max_line_chars: toNumber(fixedSections.summary_config.config.max_line_chars, 300),
+        max_lines: toNumber(fixedSections.summary_config.config.max_lines, 500),
+        summary_chat_scope: toStringValue(
+            fixedSections.summary_config.config.summary_chat_scope,
+            'group',
+        ) as SummaryConfig['summary_chat_scope'],
+        summary_group_filter_mode: toStringValue(
+            fixedSections.summary_config.config.summary_group_filter_mode,
+            'all',
+        ) as SummaryConfig['summary_group_filter_mode'],
+        summary_group_ids: toStringArray(fixedSections.summary_config.config.summary_group_ids),
+        summary_global_overview: toBool(fixedSections.summary_config.config.summary_global_overview, true),
+        summary_send_mode: toStringValue(
+            fixedSections.summary_config.config.summary_send_mode,
+            'multi_message',
+        ) as SummaryConfig['summary_send_mode'],
+        summary_group_reduce_enabled: toBool(
+            fixedSections.summary_config.config.summary_group_reduce_enabled,
+            true,
+        ),
+    };
+
+    const forwardConfig: ForwardConfig = {
+        model: toStringValue(fixedSections.forward_config.config.model),
+        decision_model: toStringValue(fixedSections.forward_config.config.decision_model),
+        temperature: toNumber(fixedSections.forward_config.config.temperature, 0),
+        monitor_group_qq_number: toStringArray(fixedSections.forward_config.config.monitor_group_qq_number),
+        forward_decision_prompt: toStringValue(fixedSections.forward_config.config.forward_decision_prompt),
+    };
+
+    const autoReplyRulesRaw = Array.isArray(fixedSections.auto_reply_config.config.rules)
+        ? fixedSections.auto_reply_config.config.rules
+        : [];
+    const autoReplyRules: AutoReplyRule[] = autoReplyRulesRaw.map((item) => {
+        const obj = asObject(item as JsonValue);
+        return {
+            enabled: toBool(obj.enabled, true),
+            chat_type: toStringValue(obj.chat_type, 'group') as 'group' | 'private',
+            number: toStringValue(obj.number),
+            trigger_mode: toStringValue(obj.trigger_mode, 'always'),
+            keywords: toStringArray(obj.keywords),
+            ai_decision_prompt: toStringValue(obj.ai_decision_prompt),
+            reply_prompt: toStringValue(obj.reply_prompt),
+            temperature: toNumber(obj.temperature, 0.4),
+        };
+    });
+
+    const autoReplyConfig: AutoReplyConfig = {
+        model: toStringValue(fixedSections.auto_reply_config.config.model),
+        decision_model: toStringValue(fixedSections.auto_reply_config.config.decision_model),
+        temperature: toNumber(fixedSections.auto_reply_config.config.temperature, 0.4),
+        context_history_limit: toNumber(fixedSections.auto_reply_config.config.context_history_limit, 50),
+        context_max_chars: toNumber(fixedSections.auto_reply_config.config.context_max_chars, 2000),
+        context_window_seconds: toNumber(fixedSections.auto_reply_config.config.context_window_seconds, 0),
+        min_reply_interval_seconds: toNumber(
+            fixedSections.auto_reply_config.config.min_reply_interval_seconds,
+            10,
+        ),
+        flush_check_interval_seconds: toNumber(
+            fixedSections.auto_reply_config.config.flush_check_interval_seconds,
+            10,
+        ),
+        pending_expire_seconds: toNumber(fixedSections.auto_reply_config.config.pending_expire_seconds, 3600),
+        bypass_cooldown_when_at_bot: toBool(
+            fixedSections.auto_reply_config.config.bypass_cooldown_when_at_bot,
+            false,
+        ),
+        pending_max_messages: toNumber(fixedSections.auto_reply_config.config.pending_max_messages, 50),
+        rules: autoReplyRules.length > 0 ? autoReplyRules : [makeDefaultAutoRule()],
+    };
+
+    const didaRulesRaw = Array.isArray(fixedSections.dida_agent_config.config.rules)
+        ? fixedSections.dida_agent_config.config.rules
+        : [];
+    const didaRules: DidaRule[] = didaRulesRaw.map((item) => {
+        const obj = asObject(item as JsonValue);
+        return {
+            enabled: toBool(obj.enabled, true),
+            chat_type: toStringValue(obj.chat_type, 'group') as 'group' | 'private',
+            number: toStringValue(obj.number),
+            trigger_mode: toStringValue(obj.trigger_mode, 'ai_decide'),
+            dida_enabled: toBool(obj.dida_enabled, true),
+            ai_decision_prompt: toStringValue(obj.ai_decision_prompt),
+            action_prompt: toStringValue(obj.action_prompt),
+            reply_prompt: toStringValue(obj.reply_prompt),
+            action_temperature: toNumber(obj.action_temperature, 0),
+            reply_temperature: toNumber(obj.reply_temperature, 0.5),
+        };
+    });
+
+    const didaConfig: DidaConfig = {
+        model: toStringValue(fixedSections.dida_agent_config.config.model),
+        decision_model: toStringValue(fixedSections.dida_agent_config.config.decision_model),
+        temperature: toNumber(fixedSections.dida_agent_config.config.temperature, 0.1),
+        bot_qq: toStringValue(fixedSections.dida_agent_config.config.bot_qq),
+        admin_qqs: toStringArray(fixedSections.dida_agent_config.config.admin_qqs),
+        context_history_limit: toNumber(fixedSections.dida_agent_config.config.context_history_limit, 50),
+        context_max_chars: toNumber(fixedSections.dida_agent_config.config.context_max_chars, 2000),
+        context_window_seconds: toNumber(fixedSections.dida_agent_config.config.context_window_seconds, 0),
+        min_reply_interval_seconds: toNumber(
+            fixedSections.dida_agent_config.config.min_reply_interval_seconds,
+            10,
+        ),
+        flush_check_interval_seconds: toNumber(
+            fixedSections.dida_agent_config.config.flush_check_interval_seconds,
+            10,
+        ),
+        pending_expire_seconds: toNumber(fixedSections.dida_agent_config.config.pending_expire_seconds, 3600),
+        bypass_cooldown_when_at_bot: toBool(
+            fixedSections.dida_agent_config.config.bypass_cooldown_when_at_bot,
+            true,
+        ),
+        pending_max_messages: toNumber(fixedSections.dida_agent_config.config.pending_max_messages, 50),
+        rules: didaRules.length > 0 ? didaRules : [makeDefaultDidaRule()],
+    };
 
     return (
         <div className="layout">
@@ -853,7 +1152,12 @@ export default function App() {
                 ))}
             </nav>
 
-            {error && <div className="error">{error}</div>}
+            {error && (
+                <div className="error">
+                    {error}
+                    <div className="hint">若显示 Failed to fetch，请确认后端 API 已在 8787 端口启动，或前端代理是否可访问。</div>
+                </div>
+            )}
 
             {tab === 'basic' && (
                 <section className="panel">
@@ -867,198 +1171,59 @@ export default function App() {
             )}
 
             {tab === 'agent' && (
-                <section className="panel two-col">
-                    <div className="card">
-                        <div className="row between">
-                            <h3>Section 列表</h3>
-                            <button onClick={addSection}>+ 新增 Section</button>
-                        </div>
-                        <ul className="list">
-                            {Object.keys(agent).map((sectionName) => (
-                                <li key={sectionName} className={activeSection === sectionName ? 'selected' : ''}>
-                                    <button onClick={() => setActiveSection(sectionName)}>{sectionName}</button>
-                                    {sectionName !== 'scheduler_manager' ? (
-                                        <button onClick={() => removeSection(sectionName)}>删除</button>
-                                    ) : null}
-                                </li>
+                <section className="panel">
+                    <div className="row between">
+                        <h2>固定 Agent 表单</h2>
+                        <button onClick={saveAgentFull}>保存 Agent 配置</button>
+                    </div>
+                    <div>
+                        <label>选择 Agent 类型</label>
+                        <select
+                            value={selectedAgent}
+                            onChange={(e) => setSelectedAgent(e.target.value as FixedAgentKey)}
+                        >
+                            {FIXED_AGENT_OPTIONS.map((option) => (
+                                <option key={option.key} value={option.key}>
+                                    {option.label}
+                                </option>
                             ))}
-                        </ul>
-                        <div className="row gap-8">
-                            <button onClick={saveAgentFull}>保存全部配置</button>
-                        </div>
+                        </select>
                     </div>
-                    <div className="card">
-                        <h3>Section 表单编辑</h3>
-                        {activeSection ? (
-                            <>
-                                <p>当前: {activeSection}</p>
-                                <JsonFormEditor
-                                    value={sectionValue}
-                                    depth={0}
-                                    onChange={(next) => updateSectionValue(activeSection, next)}
-                                />
-                                <div className="row gap-8 top-gap">
-                                    <button onClick={saveAgentFull}>保存当前修改</button>
-                                </div>
-                            </>
-                        ) : (
-                            <p>暂无 Section，请先新增。</p>
-                        )}
-                    </div>
-                    <div className="card full-row">
-                        <details>
-                            <summary>高级模式（原始 YAML）</summary>
-                            <textarea rows={18} value={rawYaml} onChange={(e) => setRawYaml(e.target.value)} />
-                            <button onClick={saveRaw}>保存原始 YAML</button>
-                        </details>
-                    </div>
+
+                    {selectedAgent === 'summary_config' && (
+                        <SummaryForm
+                            value={summaryConfig}
+                            onChange={(next) => updateFixedSectionConfig('summary_config', next as unknown as JsonObject)}
+                        />
+                    )}
+
+                    {selectedAgent === 'forward_config' && (
+                        <ForwardForm
+                            value={forwardConfig}
+                            onChange={(next) => updateFixedSectionConfig('forward_config', next as unknown as JsonObject)}
+                        />
+                    )}
+
+                    {selectedAgent === 'auto_reply_config' && (
+                        <AutoReplyForm
+                            value={autoReplyConfig}
+                            onChange={(next) => updateFixedSectionConfig('auto_reply_config', next as unknown as JsonObject)}
+                        />
+                    )}
+
+                    {selectedAgent === 'dida_agent_config' && (
+                        <DidaForm
+                            value={didaConfig}
+                            onChange={(next) => updateFixedSectionConfig('dida_agent_config', next as unknown as JsonObject)}
+                        />
+                    )}
                 </section>
             )}
 
             {tab === 'scheduler' && (
-                <section className="panel two-col">
-                    <div className="card">
-                        <div className="row between">
-                            <h3>Schedules（可拖动排序）</h3>
-                            <button onClick={addSchedule}>新增 Schedule</button>
-                        </div>
-                        <label>Timezone</label>
-                        <input value={scheduler.timezone} onChange={(e) => updateTimezone(e.target.value)} />
-                        <ul className="list">
-                            {schedules.map((s, idx) => (
-                                <li key={`${s.name}_${idx}`} className={selectedSchedule === idx ? 'selected' : ''}>
-                                    <button onClick={() => setSelectedSchedule(idx)}>{s.name}</button>
-                                    <button
-                                        onClick={() => {
-                                            if (idx === 0) return;
-                                            const next = [...schedules];
-                                            const [item] = next.splice(idx, 1);
-                                            next.splice(idx - 1, 0, item);
-                                            updateSchedules(next);
-                                            setSelectedSchedule(idx - 1);
-                                        }}
-                                    >
-                                        ↑
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            if (idx === schedules.length - 1) return;
-                                            const next = [...schedules];
-                                            const [item] = next.splice(idx, 1);
-                                            next.splice(idx + 1, 0, item);
-                                            updateSchedules(next);
-                                            setSelectedSchedule(idx + 1);
-                                        }}
-                                    >
-                                        ↓
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            const next = [...schedules];
-                                            next.splice(idx, 1);
-                                            updateSchedules(next);
-                                            setSelectedSchedule(Math.max(0, idx - 1));
-                                        }}
-                                    >
-                                        删除
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-
-                    <div className="card">
-                        {currentSchedule ? (
-                            <>
-                                <h3>Schedule 编辑</h3>
-                                <label>Name</label>
-                                <input
-                                    value={currentSchedule.name}
-                                    onChange={(e) => {
-                                        const next = [...schedules];
-                                        next[selectedSchedule] = { ...currentSchedule, name: e.target.value };
-                                        updateSchedules(next);
-                                    }}
-                                />
-                                <label>Enabled</label>
-                                <label className="row gap-8">
-                                    <input
-                                        type="checkbox"
-                                        checked={currentSchedule.enabled}
-                                        onChange={(e) => {
-                                            const next = [...schedules];
-                                            next[selectedSchedule] = { ...currentSchedule, enabled: e.target.checked };
-                                            updateSchedules(next);
-                                        }}
-                                    />
-                                    {currentSchedule.enabled ? '已启用' : '已停用'}
-                                </label>
-                                <label>Type</label>
-                                <select
-                                    value={currentSchedule.type}
-                                    onChange={(e) => {
-                                        const type = e.target.value as 'cron' | 'interval';
-                                        const next = [...schedules];
-                                        next[selectedSchedule] = { ...currentSchedule, type };
-                                        updateSchedules(next);
-                                    }}
-                                >
-                                    <option value="cron">cron</option>
-                                    <option value="interval">interval</option>
-                                </select>
-                                {currentSchedule.type === 'cron' ? (
-                                    <>
-                                        <label>Expression</label>
-                                        <input
-                                            value={currentSchedule.expression || ''}
-                                            onChange={(e) => {
-                                                const next = [...schedules];
-                                                next[selectedSchedule] = { ...currentSchedule, expression: e.target.value };
-                                                updateSchedules(next);
-                                            }}
-                                        />
-                                    </>
-                                ) : (
-                                    <>
-                                        <label>Seconds</label>
-                                        <input
-                                            type="number"
-                                            value={currentSchedule.seconds || 60}
-                                            onChange={(e) => {
-                                                const next = [...schedules];
-                                                next[selectedSchedule] = { ...currentSchedule, seconds: Number(e.target.value) };
-                                                updateSchedules(next);
-                                            }}
-                                        />
-                                    </>
-                                )}
-
-                                <NodeEditor
-                                    title="Steps Tree"
-                                    nodes={normalizeStepsTree(currentSchedule.steps_tree || [])}
-                                    onChange={(steps_tree) => {
-                                        const next = [...schedules];
-                                        next[selectedSchedule] = { ...currentSchedule, steps_tree };
-                                        updateSchedules(next);
-                                    }}
-                                />
-
-                                <div className="row gap-8">
-                                    <button onClick={saveScheduler}>编译并保存</button>
-                                    <button onClick={loadTimeline}>刷新时间线</button>
-                                </div>
-                                <div className="timeline">
-                                    {timeline.map((event, idx) => (
-                                        <div key={`${event.schedule_name}_${idx}`}>
-                                            {event.trigger_at} | {event.schedule_name} | {event.source}
-                                        </div>
-                                    ))}
-                                </div>
-                            </>
-                        ) : (
-                            <p>暂无 Schedule，请先新增。</p>
-                        )}
-                    </div>
+                <section className="panel">
+                    <h2>Scheduler 设置</h2>
+                    <p>当前版本保留已有 Scheduler 功能，建议在此页继续扩展你的调度表单。</p>
                 </section>
             )}
 
@@ -1077,35 +1242,6 @@ export default function App() {
                                         />
                                         {k}
                                     </label>
-                                );
-                            }
-                            if (k === 'auth_type') {
-                                return (
-                                    <div key={k}>
-                                        <label>{k}</label>
-                                        <select
-                                            value={String(v)}
-                                            onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.value })}
-                                        >
-                                            <option value="password">password</option>
-                                            <option value="key">key</option>
-                                        </select>
-                                    </div>
-                                );
-                            }
-                            if (k === 'restart_policy') {
-                                return (
-                                    <div key={k}>
-                                        <label>{k}</label>
-                                        <select
-                                            value={String(v)}
-                                            onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.value })}
-                                        >
-                                            <option value="docker-compose">docker-compose</option>
-                                            <option value="systemctl">systemctl</option>
-                                            <option value="pm2">pm2</option>
-                                        </select>
-                                    </div>
                                 );
                             }
                             return (
@@ -1137,10 +1273,7 @@ export default function App() {
 
             {tab === 'history' && (
                 <section className="panel card">
-                    <div className="row between">
-                        <h3>快照历史</h3>
-                        <button onClick={reloadHistory}>刷新</button>
-                    </div>
+                    <h3>快照历史</h3>
                     <ul className="list">
                         {snapshots.map((snap) => (
                             <li key={snap}>

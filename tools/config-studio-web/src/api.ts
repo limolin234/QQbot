@@ -1,15 +1,24 @@
 import type { AllConfigResponse, ScheduleConfig, TimelineEvent } from './types';
 
-const BASE = 'http://127.0.0.1:8787';
+const RAW_BASE = (import.meta.env.VITE_CONFIG_STUDIO_API_BASE as string | undefined)?.trim() || '';
+const BASE = RAW_BASE.replace(/\/$/, '');
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${BASE}${path}`, {
-        headers: {
-            'Content-Type': 'application/json',
-            ...(init?.headers || {}),
-        },
-        ...init,
-    });
+    const url = `${BASE}${path}`;
+    let response: Response;
+    try {
+        response = await fetch(url, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...(init?.headers || {}),
+            },
+            ...init,
+        });
+    } catch (error) {
+        throw new Error(
+            `Network error: Failed to fetch ${url}. Please ensure backend API is running and reachable. Original: ${String(error)}`,
+        );
+    }
 
     if (!response.ok) {
         const text = await response.text();

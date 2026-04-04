@@ -85,6 +85,12 @@ body {
     padding: 8px 10px;
 }
 
+.hint {
+    margin-top: 6px;
+    font-size: 12px;
+    opacity: 0.95;
+}
+
 label {
     display: block;
     margin-top: 10px;
@@ -199,6 +205,21 @@ button {
     border-radius: 8px;
     padding: 8px;
     background: #fafffc;
+}
+
+.rule-box {
+    margin-top: 8px;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 8px;
+}
+
+.rule-item {
+    border: 1px solid #e4ece6;
+    border-radius: 8px;
+    padding: 8px;
+    margin-top: 8px;
+    background: #fbfefc;
 }
 
 .array-box,

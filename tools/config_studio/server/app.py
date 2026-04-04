@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from .models import (
     AgentPatchRequest,
@@ -31,6 +32,18 @@ APP_VERSION = "0.1.0"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 config_service = ConfigService(REPO_ROOT)
 deploy_service = DeployService(REPO_ROOT)
 
