@@ -9,6 +9,80 @@ import yaml
 from .snapshot_service import SnapshotService
 
 
+DEFAULT_ENV_TEMPLATE = "LLM_API_KEY = \nLLM_API_BASE_URL = \n"
+
+DEFAULT_AGENT_TEMPLATE: dict[str, Any] = {
+    "summary_config": {
+        "file_name": "summary.py",
+        "config": {
+            "model": "",
+            "temperature": 0.2,
+            "summary_chat_scope": "group",
+            "summary_group_filter_mode": "all",
+            "summary_group_ids": [],
+            "summary_global_overview": True,
+            "summary_send_mode": "multi_message",
+            "summary_group_reduce_enabled": True,
+        },
+    },
+    "forward_config": {
+        "file_name": "forward.py",
+        "config": {
+            "model": "",
+            "temperature": 0.0,
+            "monitor_group_qq_number": [],
+            "forward_decision_prompt": "",
+        },
+    },
+    "auto_reply_config": {
+        "file_name": "auto_reply.py",
+        "config": {
+            "model": "",
+            "temperature": 0.4,
+            "context_history_limit": 50,
+            "context_max_chars": 2000,
+            "context_window_seconds": 0,
+            "min_reply_interval_seconds": 10,
+            "flush_check_interval_seconds": 10,
+            "pending_expire_seconds": 3600,
+            "bypass_cooldown_when_at_bot": False,
+            "pending_max_messages": 50,
+            "rules": [],
+        },
+    },
+    "dida_agent_config": {
+        "file_name": "dida_agent.py",
+        "config": {
+            "model": "",
+            "temperature": 0.1,
+            "bot_qq": "",
+            "admin_qqs": [],
+            "rules": [],
+        },
+    },
+    "dida_scheduler_config": {
+        "file_name": "dida_scheduler.py",
+        "config": {
+            "client_id": "",
+            "client_secret": "",
+            "redirect_uri": "",
+            "poll_interval_seconds": 600,
+            "due_window_seconds": 60,
+            "max_tasks_scan_per_user": 200,
+            "project_ids": [],
+            "admin_qqs": [],
+        },
+    },
+    "scheduler_manager": {
+        "file_name": "scheduler_manager.py",
+        "config": {
+            "timezone": "Asia/Shanghai",
+            "schedules": [],
+        },
+    },
+}
+
+
 class ConfigService:
     def __init__(self, repo_root: Path):
         self.repo_root = repo_root
@@ -26,16 +100,23 @@ class ConfigService:
         return env_map, agent_map
 
     def ensure_files_exist(self) -> None:
-        if not self.env_path.exists() and self.env_example_path.exists():
-            self.env_path.write_text(
-                self.env_example_path.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-        if not self.agent_yaml_path.exists() and self.agent_yaml_example_path.exists():
+        if not self.env_path.exists():
+            env_text = DEFAULT_ENV_TEMPLATE
+            if self.env_example_path.exists():
+                env_text = self.env_example_path.read_text(encoding="utf-8")
+            self.env_path.write_text(env_text, encoding="utf-8")
+
+        if not self.agent_yaml_path.exists():
             self.agent_yaml_path.parent.mkdir(parents=True, exist_ok=True)
-            self.agent_yaml_path.write_text(
-                self.agent_yaml_example_path.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
+            if self.agent_yaml_example_path.exists():
+                yaml_text = self.agent_yaml_example_path.read_text(encoding="utf-8")
+            else:
+                yaml_text = yaml.safe_dump(
+                    DEFAULT_AGENT_TEMPLATE,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            self.agent_yaml_path.write_text(yaml_text, encoding="utf-8")
 
     def read_env(self) -> dict[str, str]:
         source = self.env_path if self.env_path.exists() else self.env_example_path
@@ -50,9 +131,19 @@ class ConfigService:
             key, value = line.split("=", 1)
             data[key.strip()] = value.strip()
 
+        api_key = data.get("LLM_API_KEY", "")
+        if not api_key:
+            api_key = data.get("llm_api_key", "")
+
+        base_url = data.get("LLM_API_BASE_URL", "")
+        if not base_url:
+            base_url = data.get("LLM_BASE_URL", "")
+        if not base_url:
+            base_url = data.get("llm_api_base_url", "")
+
         return {
-            "LLM_API_KEY": data.get("LLM_API_KEY", ""),
-            "LLM_API_BASE_URL": data.get("LLM_API_BASE_URL", ""),
+            "LLM_API_KEY": api_key,
+            "LLM_API_BASE_URL": base_url,
         }
 
     def write_env(self, llm_api_key: str, llm_api_base_url: str) -> str:

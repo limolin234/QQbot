@@ -1,4 +1,4 @@
-# 配置可视化中心 架构方案 (Architect v1)
+# 配置可视化中心 架构方案 (Architect v1.1)
 
 ## 0. 结论摘要
 目标是以最小侵入方式，为 QQBot 增加本地配置中心（前端 + 本地 API），实现：
@@ -10,6 +10,7 @@
 - 业务 Bot 主链路尽量不改；新增 tools/config_studio 工具层承载前后端
 - 仅在 workflows/scheduler 增量支持“调度 DSL 解释器”
 - 保留现有线性 steps 兼容，平滑升级
+- 编辑体验遵循“表单优先，文本兜底”：默认不要求用户编辑 JSON
 
 ## 1. 上下文剪裁 (Context Pruning)
 ### 1.1 Coder 必读文件（只读/改动目标）
@@ -210,3 +211,30 @@ def eval_condition(condition: dict[str, Any], context: dict[str, Any]) -> bool
 - Scheduler 支持 if/else 与 group，执行结果与 UI 一致
 - 推送后自动重启成功并返回日志
 - 任何失败均可回滚快照并恢复
+
+## 11. 当前实施状态与待办
+### 11.1 已完成（基座能力）
+- 后端服务骨架与健康检查接口
+- 配置读写、原子写、快照机制
+- Scheduler DSL 模型与运行时解释（含 if/else）
+- 时间线预览服务（cron + interval）
+- 推送与自动重启后端能力
+- 前端基础页面、导航与端到端 API 联调
+
+### 11.2 未完成（当前主待办）
+- T1：文件初始化兜底增强
+  - 现状：依赖 example 文件
+  - 目标：即使 example 缺失也自动生成内置模板
+
+- T2：Agent 设置主路径表单化
+  - 现状：Section 编辑为 JSON 文本
+  - 目标：每个 section 改为字段表单；JSON/YAML 仅保留高级模式
+
+- T3：Scheduler 参数主路径表单化
+  - 现状：steps_tree 可视化存在，但 action params 仍是 JSON 文本
+  - 目标：按 action schema 渲染参数表单，文本编辑降级为高级模式
+
+### 11.3 推荐执行顺序（下一阶段）
+1. 先做 T1，保证空仓/缺文件场景可启动
+2. 再做 T2，完成 Agent 表单化主链路
+3. 最后做 T3，完成 Scheduler 参数表单化与联动校验

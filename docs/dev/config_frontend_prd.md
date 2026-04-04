@@ -2,7 +2,7 @@
 
 ## 1. 文档信息
 - 文档名称：QQBot 配置可视化前端 PRD
-- 版本：v1.0
+- 版本：v1.1
 - 日期：2026-04-04
 - 产品目标：将 .env 与 workflows/agent_config.yaml 的编辑能力从手工改文件升级为可视化配置中心，并支持一键推送到 Linux 服务器
 
@@ -60,11 +60,14 @@
 ### FR-1 配置文件加载
 - 启动后自动读取本地 .env 与 workflows/agent_config.yaml
 - 解析成功后显示表单；解析失败时显示错误位置与修复建议
-- 若文件不存在：提供“从示例创建”按钮
+- 若文件不存在：自动初始化
+  - 优先使用 .env.example / workflows/agent_config.yaml.example
+  - 若示例文件也不存在，使用内置默认模板自动创建并提示
 
 验收标准：
 - 能在 2 秒内完成加载并显示
 - YAML 错误可定位到行号
+- 在“目标文件与示例文件都不存在”的情况下，首次进入页面仍可自动生成可编辑配置
 
 ### FR-2 .env 可视化编辑
 - 提供字段：
@@ -79,18 +82,19 @@
 
 ### FR-3 Agent 配置编辑（agent_config.yaml）
 - 按配置段展示：summary_config、forward_config、auto_reply_config、dida_agent_config、dida_scheduler_config、scheduler_manager
-- 每段提供：启用开关、字段表单、高级模式（原始 YAML 编辑）
+- 每段提供：启用开关、字段表单、高级模式（原始 YAML 编辑，仅兜底）
 - 表单变更实时同步 YAML；高级模式提交时做 schema 校验
 
 验收标准：
 - 表单与 YAML 双向同步
 - 校验失败时阻止写入并给出错误提示
+- 默认主路径不出现 JSON 文本编辑；JSON/YAML 文本编辑仅在“高级模式”中可见
 
 ### FR-4 Scheduler 可视化编排
 - Schedule 列表支持：新增、复制、删除、启停、拖拽排序
 - 单个 Schedule 支持：
   - 基本信息：name、type、expression 或 seconds、enabled
-  - Steps 编排：动作选择、参数填写、拖拽排序
+  - Steps 编排：动作选择、参数表单填写、拖拽排序
   - 嵌套分组：支持 Group Step（仅 UI 结构）
 - 编译规则：
   - 支持 Group Step（嵌套组织）
@@ -100,6 +104,7 @@
 验收标准：
 - 拖拽后 YAML 顺序实时更新
 - 嵌套 UI 结构编译后可被现有 SchedulerManager 正常执行
+- action 参数默认使用字段表单，非高级模式下不要求用户手写 JSON
 
 ### FR-5 时间线预览
 - 对每个启用的 schedule 计算未来触发点：
@@ -296,8 +301,8 @@
 ## 18. 风险与应对
 - 风险1：YAML 复杂结构导致表单映射不完整
   - 应对：保留高级原始编辑模式
-- 风险2：嵌套语义与后端执行模型不一致
-  - 应对：明确“嵌套仅组织用途”，编译为线性 steps
+- 风险2：条件分支语义与后端解释执行不一致
+  - 应对：前后端共享 DSL 约束，增加 if/else 用例回归测试
 - 风险3：服务器认证失败影响推送体验
   - 应对：连接测试与错误码映射
 - 风险4：文件被外部改动导致覆盖冲突
@@ -324,3 +329,23 @@
 - 交互原型草图说明
 - 字段级 schema 清单
 - 开发任务拆解（前端/后端/测试）
+
+## 22. 当前待办（以表单化为主）
+### 22.1 P0（必须完成）
+- P0-1：文件初始化兜底
+  - 在示例文件缺失时，后端自动写入内置默认模板
+- P0-2：Agent 配置表单化
+  - summary_config、forward_config、auto_reply_config、dida_agent_config、dida_scheduler_config、scheduler_manager 全部改为字段表单
+  - 当前 Section JSON 文本编辑降级为高级模式
+- P0-3：Scheduler 参数表单化
+  - action 参数按 action_id 渲染专属表单（如 core.send_group_msg、dida.push_task_list）
+  - 当前 params JSON textarea 降级为高级模式
+
+### 22.2 P1（应完成）
+- P1-1：表单校验与错误提示完善（字段级）
+- P1-2：时间线视图增强（列表 + 可视化时间轴切换）
+- P1-3：推送后重启结果可视化（状态徽标 + 失败排障建议）
+
+### 22.3 P2（可后置）
+- P2-1：多环境目标管理（dev/staging/prod）
+- P2-2：远程拉取并差异对比后再推送
