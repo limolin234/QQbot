@@ -1,10 +1,16 @@
 import asyncio
 import re, json
 import threading
-import shutil
 import os
+import errno
+import time
 from datetime import datetime, timezone
 from ncatbot.core import PrivateMessage, GroupMessage
+
+try:
+    import fcntl  # Unix 进程级文件锁，防止多进程并发读写冲突
+except Exception:  # pragma: no cover
+    fcntl = None
 
 LOG_FILE_PATH = "message.jsonl"
 FILE_LOCK = asyncio.Lock()
@@ -13,6 +19,19 @@ PHYSICAL_FILE_LOCK = threading.Lock()
 MAX_LOG_LINES = 3000
 TRUNCATE_TO_LINES = 2000
 _line_counter = 0
+TRUNCATE_RETRY_DELAYS = (0.05, 0.1, 0.2)
+
+
+def _lock_file(file_obj, *, exclusive: bool) -> None:
+    if fcntl is None:
+        return
+    fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+
+def _unlock_file(file_obj) -> None:
+    if fcntl is None:
+        return
+    fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
 
 
 def start_up() -> None:
@@ -25,27 +44,38 @@ def start_up() -> None:
 
 
 def _truncate_log() -> None:
-    try:
-        with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        return
-
-    if len(lines) > TRUNCATE_TO_LINES:
-        lines = lines[-TRUNCATE_TO_LINES:]
-        tmp_path = LOG_FILE_PATH + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-        
-        # 使用锁保护重命名操作
-        with PHYSICAL_FILE_LOCK:
+    # 在同一文件内原地重写，避免容器挂载场景下 rename/replace 触发 EBUSY。
+    with PHYSICAL_FILE_LOCK:
+        for attempt, delay in enumerate((*TRUNCATE_RETRY_DELAYS, None), start=1):
             try:
-                # Docker bind mount 场景下不能使用 os.replace 覆盖原文件
-                # 必须使用 copy + truncate 的方式保留原文件 inode
-                shutil.copyfile(tmp_path, LOG_FILE_PATH)
-                os.remove(tmp_path)
-            except OSError:
-                pass  # 如果失败，下次再试，避免崩溃
+                with open(LOG_FILE_PATH, "r+", encoding="utf-8") as f:
+                    _lock_file(f, exclusive=True)
+                    try:
+                        lines = f.readlines()
+                        if len(lines) <= TRUNCATE_TO_LINES:
+                            return
+                        keep_lines = lines[-TRUNCATE_TO_LINES:]
+                        f.seek(0)
+                        f.writelines(keep_lines)
+                        f.truncate()
+                        f.flush()
+                        os.fsync(f.fileno())
+                        return
+                    finally:
+                        _unlock_file(f)
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                # 资源繁忙/临时不可用时做短重试，其余异常直接跳过，避免影响主流程。
+                retryable = error.errno in {
+                    errno.EBUSY,
+                    errno.EAGAIN,
+                    errno.EACCES,
+                    errno.ETXTBSY,
+                }
+                if delay is None or not retryable:
+                    return
+                time.sleep(delay)
 
 
 def clean_message(raw_message: str) -> str:
@@ -71,7 +101,11 @@ def _extract_message_ts(msg: GroupMessage | PrivateMessage) -> str:
     if ts_candidate is not None:
         try:
             ts_value = float(ts_candidate)
-            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+            return (
+                datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
         except (TypeError, ValueError, OSError):
             pass
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -118,7 +152,7 @@ def _write_log(
     cleaned_message: str,
 ) -> None:
     global _line_counter
-    
+
     payload = {
         "ts": ts,
         "group_id": str(group_id),
@@ -130,8 +164,13 @@ def _write_log(
 
     with PHYSICAL_FILE_LOCK:
         with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            f.flush()
+            _lock_file(f, exclusive=True)
+            try:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                _unlock_file(f)
 
     _line_counter += 1
     if _line_counter >= MAX_LOG_LINES:
@@ -190,7 +229,11 @@ def load_recent_context_messages(
     try:
         with PHYSICAL_FILE_LOCK:
             with open(log_path, "r", encoding="utf-8") as file:
-                raw_lines = [line.strip() for line in file if line.strip()]
+                _lock_file(file, exclusive=False)
+                try:
+                    raw_lines = [line.strip() for line in file if line.strip()]
+                finally:
+                    _unlock_file(file)
     except OSError:
         return []
 
@@ -211,9 +254,15 @@ def load_recent_context_messages(
         payload_chat_type = str(payload.get("chat_type", "")).strip().lower()
         if payload_chat_type != target_chat_type:
             continue
-        if target_chat_type == "group" and str(payload.get("group_id", "")) != target_group:
+        if (
+            target_chat_type == "group"
+            and str(payload.get("group_id", "")) != target_group
+        ):
             continue
-        if target_chat_type == "private" and str(payload.get("user_id", "")) != target_user:
+        if (
+            target_chat_type == "private"
+            and str(payload.get("user_id", "")) != target_user
+        ):
             continue
 
         cleaned_message = str(payload.get("cleaned_message", "")).strip()
@@ -222,9 +271,13 @@ def load_recent_context_messages(
         ts = str(payload.get("ts", ""))
         if window_enabled:
             payload_epoch = _parse_timestamp_to_epoch_seconds(ts)
-            if payload_epoch is not None and payload_epoch < (current_epoch - window_seconds):
+            if payload_epoch is not None and payload_epoch < (
+                current_epoch - window_seconds
+            ):
                 continue
-        sender_name = str(payload.get("user_name", "")).strip() or str(payload.get("user_id", ""))
+        sender_name = str(payload.get("user_name", "")).strip() or str(
+            payload.get("user_id", "")
+        )
         matched_records.append((ts, sender_name, cleaned_message))
 
     context_lines = []
@@ -239,7 +292,11 @@ def load_recent_context_messages(
             skipped_current = True
             continue
 
-        line = f"[{ts}] {sender_name}: {message_text}" if ts else f"{sender_name}: {message_text}"
+        line = (
+            f"[{ts}] {sender_name}: {message_text}"
+            if ts
+            else f"{sender_name}: {message_text}"
+        )
         if total_chars + len(line) > max_chars:
             break
         context_lines.append(line)
