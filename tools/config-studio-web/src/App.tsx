@@ -1,14 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+    compileSchedules,
     deployPush,
     getAllConfig,
+    getTimeline,
     listSnapshots,
     restoreSnapshot,
     saveAgent,
     saveEnv,
-    testConnection,
+    testConnection
 } from './api';
-import type { AgentConfigRoot, JsonObject, JsonValue, TabKey } from './types';
+import type {
+    AgentConfigRoot,
+    JsonObject,
+    JsonValue,
+    ScheduleConfig,
+    StepNode,
+    TabKey,
+    TimelineEvent
+} from './types';
 
 type FixedAgentKey = 'summary_config' | 'forward_config' | 'auto_reply_config' | 'dida_agent_config';
 
@@ -89,6 +99,58 @@ type DidaConfig = {
     rules: DidaRule[];
 };
 
+type SchedulerManagerConfig = {
+    timezone: string;
+    schedules: ScheduleConfig[];
+};
+
+type ActionFieldType = 'string' | 'number' | 'boolean' | 'string[]';
+
+type ActionFieldSchema = {
+    key: string;
+    label: string;
+    type: ActionFieldType;
+};
+
+type ActionSchema = {
+    action: string;
+    label: string;
+    fields: ActionFieldSchema[];
+};
+
+const ACTION_SCHEMAS: ActionSchema[] = [
+    {
+        action: 'core.send_group_msg',
+        label: '发送群消息',
+        fields: [
+            { key: 'group_id', label: '群号', type: 'string' },
+            { key: 'message', label: '消息内容', type: 'string' },
+        ],
+    },
+    {
+        action: 'summary.daily_report',
+        label: '每日总结',
+        fields: [{ key: 'run_mode', label: '运行模式', type: 'string' }],
+    },
+    {
+        action: 'dida.poll',
+        label: '轮询任务',
+        fields: [{ key: 'project_ids', label: '项目 ID 列表', type: 'string[]' }],
+    },
+    {
+        action: 'dida.push_task_list',
+        label: '推送任务清单',
+        fields: [
+            { key: 'group_id', label: '群号', type: 'string' },
+            { key: 'user_qq', label: '用户 QQ', type: 'string' },
+            { key: 'day_range', label: '时间范围', type: 'string' },
+            { key: 'limit', label: '条数上限', type: 'number' },
+        ],
+    },
+];
+
+const ACTION_OPTIONS = ACTION_SCHEMAS.map((item) => ({ value: item.action, label: `${item.action} (${item.label})` }));
+
 type FixedSection = {
     file_name: string;
     config: JsonObject;
@@ -124,6 +186,132 @@ function toStringValue(value: JsonValue | undefined, fallback = ''): string {
     if (typeof value === 'string') return value;
     if (value === undefined || value === null) return fallback;
     return String(value);
+}
+
+function makeNodeId(): string {
+    return `node_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getActionSchema(action: string): ActionSchema | undefined {
+    return ACTION_SCHEMAS.find((item) => item.action === action);
+}
+
+function toStepNode(item: JsonValue): StepNode | null {
+    const obj = asObject(item);
+    const kind = toStringValue(obj.kind, 'action') as StepNode['kind'];
+    if (kind !== 'action' && kind !== 'group' && kind !== 'if') {
+        return null;
+    }
+
+    const node: StepNode = {
+        id: toStringValue(obj.id, makeNodeId()),
+        kind,
+    };
+
+    if (kind === 'action') {
+        node.action = toStringValue(obj.action, 'core.send_group_msg');
+        node.params = asObject(obj.params);
+        return node;
+    }
+
+    if (kind === 'group') {
+        node.name = toStringValue(obj.name, 'group');
+        const children = Array.isArray(obj.children) ? obj.children : [];
+        node.children = children.map((child) => toStepNode(child)).filter((child): child is StepNode => Boolean(child));
+        return node;
+    }
+
+    node.condition = {
+        source: toStringValue(asObject(obj.condition).source, 'env'),
+        key: toStringValue(asObject(obj.condition).key, ''),
+        op: toStringValue(asObject(obj.condition).op, 'eq'),
+        value: toStringValue(asObject(obj.condition).value, ''),
+    };
+    const thenSteps = Array.isArray(obj.then_steps) ? obj.then_steps : [];
+    const elseSteps = Array.isArray(obj.else_steps) ? obj.else_steps : [];
+    node.then_steps = thenSteps.map((child) => toStepNode(child)).filter((child): child is StepNode => Boolean(child));
+    node.else_steps = elseSteps.map((child) => toStepNode(child)).filter((child): child is StepNode => Boolean(child));
+    return node;
+}
+
+function normalizeSchedules(input: JsonValue | undefined): ScheduleConfig[] {
+    if (!Array.isArray(input)) return [];
+    const items: ScheduleConfig[] = [];
+    input.forEach((raw, idx) => {
+        const obj = asObject(raw);
+        const scheduleType = toStringValue(obj.type, 'cron') as 'cron' | 'interval';
+        const schedule: ScheduleConfig = {
+            name: toStringValue(obj.name, `schedule_${idx + 1}`),
+            type: scheduleType,
+            enabled: toBool(obj.enabled, true),
+        };
+        if (scheduleType === 'cron') {
+            schedule.expression = toStringValue(obj.expression, '*/5 * * * *');
+        } else {
+            schedule.seconds = toNumber(obj.seconds, 60);
+        }
+
+        if (Array.isArray(obj.steps_tree)) {
+            schedule.steps_tree = obj.steps_tree
+                .map((item) => toStepNode(item))
+                .filter((item): item is StepNode => Boolean(item));
+        } else if (Array.isArray(obj.steps)) {
+            schedule.steps_tree = obj.steps.map((legacy) => {
+                const legacyObj = asObject(legacy);
+                return {
+                    id: makeNodeId(),
+                    kind: 'action',
+                    action: toStringValue(legacyObj.action, 'core.send_group_msg'),
+                    params: asObject(legacyObj.params),
+                } satisfies StepNode;
+            });
+        } else {
+            schedule.steps_tree = [];
+        }
+
+        items.push(schedule);
+    });
+    return items;
+}
+
+function getSchedulerManagerConfig(agent: AgentConfigRoot): SchedulerManagerConfig {
+    const section = asObject(agent.scheduler_manager);
+    const config = asObject(section.config);
+    return {
+        timezone: toStringValue(config.timezone, 'Asia/Shanghai'),
+        schedules: normalizeSchedules(config.schedules),
+    };
+}
+
+function defaultSchedule(): ScheduleConfig {
+    return {
+        name: 'new_schedule',
+        type: 'cron',
+        expression: '*/5 * * * *',
+        enabled: true,
+        steps_tree: [],
+    };
+}
+
+function defaultStep(kind: StepNode['kind']): StepNode {
+    if (kind === 'group') {
+        return { id: makeNodeId(), kind: 'group', name: 'group', children: [] };
+    }
+    if (kind === 'if') {
+        return {
+            id: makeNodeId(),
+            kind: 'if',
+            condition: { source: 'env', key: '', op: 'eq', value: '' },
+            then_steps: [],
+            else_steps: [],
+        };
+    }
+    return {
+        id: makeNodeId(),
+        kind: 'action',
+        action: 'core.send_group_msg',
+        params: { group_id: '', message: '' },
+    };
 }
 
 function makeDefaultAutoRule(): AutoReplyRule {
@@ -900,6 +1088,313 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
     );
 }
 
+function ActionParamsEditor({
+    action,
+    params,
+    onChange,
+}: {
+    action: string;
+    params: JsonObject;
+    onChange: (next: JsonObject) => void;
+}) {
+    const schema = getActionSchema(action);
+    const [draft, setDraft] = useState(JSON.stringify(params, null, 2));
+    const [jsonError, setJsonError] = useState('');
+
+    useEffect(() => {
+        setDraft(JSON.stringify(params, null, 2));
+    }, [params]);
+
+    return (
+        <div className="node">
+            <strong>参数</strong>
+            {schema ? (
+                <div className="grid2 top-gap">
+                    {schema.fields.map((field) => {
+                        if (field.type === 'boolean') {
+                            return (
+                                <label key={field.key} className="row gap-8">
+                                    <input
+                                        type="checkbox"
+                                        checked={toBool(params[field.key], false)}
+                                        onChange={(e) => onChange({ ...params, [field.key]: e.target.checked })}
+                                    />
+                                    {field.label}
+                                </label>
+                            );
+                        }
+
+                        if (field.type === 'string[]') {
+                            return (
+                                <div key={field.key} className="full-row">
+                                    <label>{field.label}</label>
+                                    <StringListEditor
+                                        values={toStringArray(params[field.key])}
+                                        onChange={(next) => onChange({ ...params, [field.key]: next })}
+                                    />
+                                </div>
+                            );
+                        }
+
+                        return (
+                            <div key={field.key}>
+                                <label>{field.label}</label>
+                                <input
+                                    type={field.type === 'number' ? 'number' : 'text'}
+                                    value={
+                                        field.type === 'number'
+                                            ? String(toNumber(params[field.key], 0))
+                                            : toStringValue(params[field.key])
+                                    }
+                                    onChange={(e) =>
+                                        onChange({
+                                            ...params,
+                                            [field.key]: field.type === 'number' ? Number(e.target.value) : e.target.value,
+                                        })
+                                    }
+                                />
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : (
+                <div className="muted top-gap">该 action 未配置字段 schema，将使用高级 JSON 编辑。</div>
+            )}
+
+            <details className="top-gap">
+                <summary>高级模式(JSON)</summary>
+                <textarea
+                    rows={8}
+                    value={draft}
+                    onChange={(e) => {
+                        const nextDraft = e.target.value;
+                        setDraft(nextDraft);
+                        try {
+                            const parsed = JSON.parse(nextDraft) as JsonObject;
+                            if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+                                setJsonError('params 必须是 JSON 对象');
+                                return;
+                            }
+                            setJsonError('');
+                            onChange(parsed);
+                        } catch {
+                            setJsonError('JSON 格式错误');
+                        }
+                    }}
+                />
+                {jsonError && <div className="muted">{jsonError}</div>}
+            </details>
+        </div>
+    );
+}
+
+function StepTreeEditor({
+    nodes,
+    onChange,
+    depth = 0,
+}: {
+    nodes: StepNode[];
+    onChange: (next: StepNode[]) => void;
+    depth?: number;
+}) {
+    const updateAt = (index: number, nextNode: StepNode) => {
+        const next = [...nodes];
+        next[index] = nextNode;
+        onChange(next);
+    };
+
+    const removeAt = (index: number) => {
+        const next = [...nodes];
+        next.splice(index, 1);
+        onChange(next);
+    };
+
+    const move = (index: number, direction: -1 | 1) => {
+        const target = index + direction;
+        if (target < 0 || target >= nodes.length) return;
+        const next = [...nodes];
+        const item = next[index];
+        next[index] = next[target];
+        next[target] = item;
+        onChange(next);
+    };
+
+    return (
+        <div className="rule-box" style={{ marginLeft: depth * 12 }}>
+            {nodes.map((node, idx) => (
+                <div key={node.id || `${node.kind}_${idx}`} className="node">
+                    <div className="row between gap-8 wrap">
+                        <strong>
+                            {node.kind === 'action' ? 'Action' : node.kind === 'group' ? 'Group' : 'If'} #{idx + 1}
+                        </strong>
+                        <div className="row gap-8 wrap">
+                            <button onClick={() => move(idx, -1)} disabled={idx === 0}>
+                                上移
+                            </button>
+                            <button onClick={() => move(idx, 1)} disabled={idx === nodes.length - 1}>
+                                下移
+                            </button>
+                            <button onClick={() => removeAt(idx)}>删除</button>
+                        </div>
+                    </div>
+
+                    <div className="grid2 top-gap">
+                        <div>
+                            <label>节点类型</label>
+                            <select
+                                value={node.kind}
+                                onChange={(e) => updateAt(idx, defaultStep(e.target.value as StepNode['kind']))}
+                            >
+                                <option value="action">action</option>
+                                <option value="group">group</option>
+                                <option value="if">if</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    {node.kind === 'action' && (
+                        <>
+                            <div>
+                                <label>action</label>
+                                <select
+                                    value={node.action || 'core.send_group_msg'}
+                                    onChange={(e) =>
+                                        updateAt(idx, {
+                                            ...node,
+                                            action: e.target.value,
+                                            params: node.params || {},
+                                        })
+                                    }
+                                >
+                                    {ACTION_OPTIONS.map((item) => (
+                                        <option key={item.value} value={item.value}>
+                                            {item.label}
+                                        </option>
+                                    ))}
+                                    {!ACTION_OPTIONS.find((item) => item.value === node.action) && node.action && (
+                                        <option value={node.action}>{node.action}</option>
+                                    )}
+                                </select>
+                            </div>
+                            <ActionParamsEditor
+                                action={node.action || 'core.send_group_msg'}
+                                params={node.params || {}}
+                                onChange={(nextParams) => updateAt(idx, { ...node, params: nextParams })}
+                            />
+                        </>
+                    )}
+
+                    {node.kind === 'group' && (
+                        <>
+                            <div>
+                                <label>group 名称</label>
+                                <input
+                                    value={node.name || ''}
+                                    onChange={(e) => updateAt(idx, { ...node, name: e.target.value })}
+                                />
+                            </div>
+                            <div className="top-gap">
+                                <label>children</label>
+                                <StepTreeEditor
+                                    nodes={node.children || []}
+                                    depth={depth + 1}
+                                    onChange={(children) => updateAt(idx, { ...node, children })}
+                                />
+                            </div>
+                        </>
+                    )}
+
+                    {node.kind === 'if' && (
+                        <>
+                            <div className="grid2 top-gap">
+                                <div>
+                                    <label>source</label>
+                                    <select
+                                        value={node.condition?.source || 'env'}
+                                        onChange={(e) =>
+                                            updateAt(idx, {
+                                                ...node,
+                                                condition: { ...(node.condition || {}), source: e.target.value },
+                                            })
+                                        }
+                                    >
+                                        <option value="env">env</option>
+                                        <option value="context">context</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>op</label>
+                                    <select
+                                        value={node.condition?.op || 'eq'}
+                                        onChange={(e) =>
+                                            updateAt(idx, {
+                                                ...node,
+                                                condition: { ...(node.condition || {}), op: e.target.value },
+                                            })
+                                        }
+                                    >
+                                        <option value="eq">eq</option>
+                                        <option value="ne">ne</option>
+                                        <option value="contains">contains</option>
+                                        <option value="in">in</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>key</label>
+                                    <input
+                                        value={node.condition?.key || ''}
+                                        onChange={(e) =>
+                                            updateAt(idx, {
+                                                ...node,
+                                                condition: { ...(node.condition || {}), key: e.target.value },
+                                            })
+                                        }
+                                    />
+                                </div>
+                                <div>
+                                    <label>value</label>
+                                    <input
+                                        value={node.condition?.value || ''}
+                                        onChange={(e) =>
+                                            updateAt(idx, {
+                                                ...node,
+                                                condition: { ...(node.condition || {}), value: e.target.value },
+                                            })
+                                        }
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="top-gap">
+                                <label>then_steps</label>
+                                <StepTreeEditor
+                                    nodes={node.then_steps || []}
+                                    depth={depth + 1}
+                                    onChange={(then_steps) => updateAt(idx, { ...node, then_steps })}
+                                />
+                            </div>
+                            <div className="top-gap">
+                                <label>else_steps</label>
+                                <StepTreeEditor
+                                    nodes={node.else_steps || []}
+                                    depth={depth + 1}
+                                    onChange={(else_steps) => updateAt(idx, { ...node, else_steps })}
+                                />
+                            </div>
+                        </>
+                    )}
+                </div>
+            ))}
+
+            <div className="row gap-8 top-gap wrap">
+                <button onClick={() => onChange([...nodes, defaultStep('action')])}>+ Action</button>
+                <button onClick={() => onChange([...nodes, defaultStep('group')])}>+ Group</button>
+                <button onClick={() => onChange([...nodes, defaultStep('if')])}>+ If</button>
+            </div>
+        </div>
+    );
+}
+
 export default function App() {
     const [tab, setTab] = useState<TabKey>('basic');
     const [status, setStatus] = useState('idle');
@@ -925,8 +1420,13 @@ export default function App() {
     });
     const [deployLogs, setDeployLogs] = useState<string[]>([]);
     const [snapshots, setSnapshots] = useState<string[]>([]);
+    const [selectedScheduleIndex, setSelectedScheduleIndex] = useState(0);
+    const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
+    const [timelineCount, setTimelineCount] = useState(20);
+    const [schedulerMessage, setSchedulerMessage] = useState('');
 
     const fixedSections = useMemo(() => normalizeFixedSections(agent), [agent]);
+    const schedulerConfig = useMemo(() => getSchedulerManagerConfig(agent), [agent]);
 
     useEffect(() => {
         (async () => {
@@ -954,6 +1454,16 @@ export default function App() {
         return () => clearTimeout(timer);
     }, [llmApiKey, llmApiBaseUrl, status]);
 
+    useEffect(() => {
+        if (schedulerConfig.schedules.length === 0) {
+            setSelectedScheduleIndex(0);
+            return;
+        }
+        if (selectedScheduleIndex > schedulerConfig.schedules.length - 1) {
+            setSelectedScheduleIndex(schedulerConfig.schedules.length - 1);
+        }
+    }, [schedulerConfig.schedules.length, selectedScheduleIndex]);
+
     const updateFixedSectionConfig = (key: FixedAgentKey, cfg: JsonObject) => {
         const next = cloneAgent(agent);
         next[key] = {
@@ -961,6 +1471,96 @@ export default function App() {
             config: cfg,
         };
         setAgent(next);
+    };
+
+    const updateSchedulerConfig = (nextConfig: SchedulerManagerConfig) => {
+        const next = cloneAgent(agent);
+        next.scheduler_manager = {
+            file_name: toStringValue(asObject(next.scheduler_manager).file_name, 'scheduler_manager.py'),
+            config: {
+                timezone: nextConfig.timezone,
+                schedules: nextConfig.schedules,
+            },
+        };
+        setAgent(next);
+    };
+
+    const updateScheduleAt = (index: number, nextSchedule: ScheduleConfig) => {
+        const nextSchedules = [...schedulerConfig.schedules];
+        nextSchedules[index] = nextSchedule;
+        updateSchedulerConfig({ ...schedulerConfig, schedules: nextSchedules });
+    };
+
+    const moveSchedule = (index: number, direction: -1 | 1) => {
+        const target = index + direction;
+        if (target < 0 || target >= schedulerConfig.schedules.length) return;
+        const next = [...schedulerConfig.schedules];
+        const item = next[index];
+        next[index] = next[target];
+        next[target] = item;
+        updateSchedulerConfig({ ...schedulerConfig, schedules: next });
+        setSelectedScheduleIndex(target);
+    };
+
+    const addSchedule = () => {
+        const next = [...schedulerConfig.schedules, defaultSchedule()];
+        updateSchedulerConfig({ ...schedulerConfig, schedules: next });
+        setSelectedScheduleIndex(next.length - 1);
+    };
+
+    const duplicateSchedule = (index: number) => {
+        const item = schedulerConfig.schedules[index];
+        if (!item) return;
+        const clone = JSON.parse(JSON.stringify(item)) as ScheduleConfig;
+        clone.name = `${item.name}_copy`;
+        const next = [...schedulerConfig.schedules];
+        next.splice(index + 1, 0, clone);
+        updateSchedulerConfig({ ...schedulerConfig, schedules: next });
+        setSelectedScheduleIndex(index + 1);
+    };
+
+    const removeSchedule = (index: number) => {
+        const next = [...schedulerConfig.schedules];
+        next.splice(index, 1);
+        updateSchedulerConfig({ ...schedulerConfig, schedules: next });
+        setSelectedScheduleIndex(Math.max(0, Math.min(index, next.length - 1)));
+    };
+
+    const saveSchedulerConfig = async () => {
+        try {
+            setSchedulerMessage('保存中...');
+            const compiled = await compileSchedules(schedulerConfig.schedules);
+            const compiledConfig: SchedulerManagerConfig = {
+                timezone: schedulerConfig.timezone,
+                schedules: compiled.schedules,
+            };
+            const payload = cloneAgent(agent);
+            payload.scheduler_manager = {
+                file_name: toStringValue(asObject(payload.scheduler_manager).file_name, 'scheduler_manager.py'),
+                config: compiledConfig,
+            };
+            await saveAgent(payload as Record<string, unknown>);
+            setAgent(payload);
+            setStatus('saved');
+            setSchedulerMessage('Scheduler 已保存并完成编译');
+        } catch (e) {
+            setError(String(e));
+            setSchedulerMessage('保存失败');
+        }
+    };
+
+    const loadTimeline = async () => {
+        try {
+            const resp = await getTimeline(
+                schedulerConfig.timezone,
+                schedulerConfig.schedules,
+                Math.max(1, Math.min(200, timelineCount)),
+            );
+            setTimelineEvents(resp.events || []);
+            setSchedulerMessage(`时间线已刷新，共 ${resp.events?.length || 0} 条`);
+        } catch (e) {
+            setError(String(e));
+        }
     };
 
     const saveAgentFull = async () => {
@@ -1131,6 +1731,8 @@ export default function App() {
         rules: didaRules.length > 0 ? didaRules : [makeDefaultDidaRule()],
     };
 
+    const selectedSchedule = schedulerConfig.schedules[selectedScheduleIndex];
+
     return (
         <div className="layout">
             <header className="topbar">
@@ -1223,7 +1825,257 @@ export default function App() {
             {tab === 'scheduler' && (
                 <section className="panel">
                     <h2>Scheduler 设置</h2>
-                    <p>当前版本保留已有 Scheduler 功能，建议在此页继续扩展你的调度表单。</p>
+                    <details className="scheduler-help top-gap" open>
+                        <summary>Scheduler 功能使用说明</summary>
+                        <div className="scheduler-help-content">
+                            <h4>1. 可用参数</h4>
+                            <ul>
+                                <li>timezone: 调度时区，例如 Asia/Shanghai。cron 计算会使用该时区。</li>
+                                <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
+                                <li>name: 任务名称，仅用于识别和展示。</li>
+                                <li>type: 调度类型，可选 cron 或 interval。</li>
+                                <li>expression: cron 表达式，仅在 type=cron 时生效。</li>
+                                <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
+                                <li>enabled: 是否启用该 schedule。</li>
+                                <li>steps_tree: 调度步骤树，支持 action/group/if 三类节点。</li>
+                            </ul>
+
+                            <h4>2. 可用操作</h4>
+                            <ul>
+                                <li>新增 Schedule: 创建一条新的调度任务。</li>
+                                <li>复制: 复制当前任务，用于快速创建相似任务。</li>
+                                <li>上移/下移: 调整任务执行顺序（保存后写入 YAML 顺序）。</li>
+                                <li>删除: 删除任务。</li>
+                                <li>保存并编译 Scheduler: 调用后端编译接口并保存到 agent_config.yaml。</li>
+                                <li>刷新时间线: 基于当前配置计算未来触发时间。</li>
+                            </ul>
+
+                            <h4>3. 节点类型与嵌套</h4>
+                            <ul>
+                                <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
+                                <li>group: 逻辑分组节点，children 内可继续嵌套 action/group/if。</li>
+                                <li>if: 条件分支节点，按 condition 判断进入 then_steps 或 else_steps。</li>
+                            </ul>
+
+                            <h4>4. if/group/action 参数说明</h4>
+                            <ul>
+                                <li>if.condition.source: 条件来源，当前支持 env 或 context。</li>
+                                <li>if.condition.key: 参与比较的键名，例如 ENABLE_DIDA_PUSH。</li>
+                                <li>if.condition.op: 比较操作符，可选 eq/ne/contains/in。</li>
+                                <li>if.condition.value: 比较值，通常写字符串。</li>
+                                <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
+                                <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
+                            </ul>
+
+                            <h4>5. 推荐使用流程</h4>
+                            <ol>
+                                <li>先创建 schedule 并设置 type、expression/seconds、enabled。</li>
+                                <li>在 steps_tree 里先搭结构（group/if），再填 action 参数。</li>
+                                <li>点击刷新时间线确认触发节奏。</li>
+                                <li>点击保存并编译 Scheduler 落盘生效。</li>
+                            </ol>
+                        </div>
+                    </details>
+
+                    <div className="row gap-8 wrap">
+                        <div className="grow">
+                            <label>timezone</label>
+                            <input
+                                value={schedulerConfig.timezone}
+                                onChange={(e) =>
+                                    updateSchedulerConfig({
+                                        ...schedulerConfig,
+                                        timezone: e.target.value,
+                                    })
+                                }
+                            />
+                        </div>
+                        <div>
+                            <label>timeline count</label>
+                            <input
+                                type="number"
+                                value={timelineCount}
+                                onChange={(e) => setTimelineCount(Number(e.target.value) || 10)}
+                            />
+                        </div>
+                    </div>
+
+                    <div className="row gap-8 top-gap wrap">
+                        <button onClick={addSchedule}>+ 新增 Schedule</button>
+                        <button onClick={saveSchedulerConfig}>保存并编译 Scheduler</button>
+                        <button onClick={loadTimeline}>刷新时间线</button>
+                        {schedulerMessage && <span className="muted">{schedulerMessage}</span>}
+                    </div>
+
+                    <div className="two-col top-gap">
+                        <div className="card">
+                            <h3>Schedule 列表</h3>
+                            <ul className="list">
+                                {schedulerConfig.schedules.map((item, idx) => (
+                                    <li
+                                        key={`${item.name}_${idx}`}
+                                        className={selectedScheduleIndex === idx ? 'selected' : ''}
+                                        onClick={() => setSelectedScheduleIndex(idx)}
+                                    >
+                                        <span>
+                                            {item.name || `schedule_${idx + 1}`} ({item.type}) {item.enabled ? '启用' : '停用'}
+                                        </span>
+                                        <div className="row gap-8 wrap">
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    moveSchedule(idx, -1);
+                                                }}
+                                                disabled={idx === 0}
+                                            >
+                                                上移
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    moveSchedule(idx, 1);
+                                                }}
+                                                disabled={idx === schedulerConfig.schedules.length - 1}
+                                            >
+                                                下移
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    duplicateSchedule(idx);
+                                                }}
+                                            >
+                                                复制
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    removeSchedule(idx);
+                                                }}
+                                            >
+                                                删除
+                                            </button>
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
+                        <div className="card">
+                            <h3>时间线预览</h3>
+                            <div className="timeline">
+                                {timelineEvents.length === 0 ? (
+                                    <div className="muted">暂无数据，点击“刷新时间线”生成。</div>
+                                ) : (
+                                    timelineEvents.map((event, idx) => (
+                                        <div key={`${event.schedule_name}_${event.trigger_at}_${idx}`}>
+                                            [{event.source}] {event.schedule_name} - {event.trigger_at}
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {selectedSchedule ? (
+                        <div className="card top-gap">
+                            <h3>编辑 Schedule</h3>
+                            <div className="grid2">
+                                <div>
+                                    <label>name</label>
+                                    <input
+                                        value={selectedSchedule.name}
+                                        onChange={(e) =>
+                                            updateScheduleAt(selectedScheduleIndex, {
+                                                ...selectedSchedule,
+                                                name: e.target.value,
+                                            })
+                                        }
+                                    />
+                                </div>
+                                <div>
+                                    <label>type</label>
+                                    <select
+                                        value={selectedSchedule.type}
+                                        onChange={(e) => {
+                                            const nextType = e.target.value as 'cron' | 'interval';
+                                            const nextSchedule: ScheduleConfig = {
+                                                ...selectedSchedule,
+                                                type: nextType,
+                                            };
+                                            if (nextType === 'cron') {
+                                                nextSchedule.expression = selectedSchedule.expression || '*/5 * * * *';
+                                                delete nextSchedule.seconds;
+                                            } else {
+                                                nextSchedule.seconds = selectedSchedule.seconds || 60;
+                                                delete nextSchedule.expression;
+                                            }
+                                            updateScheduleAt(selectedScheduleIndex, nextSchedule);
+                                        }}
+                                    >
+                                        <option value="cron">cron</option>
+                                        <option value="interval">interval</option>
+                                    </select>
+                                </div>
+                                <label className="row gap-8">
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedSchedule.enabled}
+                                        onChange={(e) =>
+                                            updateScheduleAt(selectedScheduleIndex, {
+                                                ...selectedSchedule,
+                                                enabled: e.target.checked,
+                                            })
+                                        }
+                                    />
+                                    enabled
+                                </label>
+                                {selectedSchedule.type === 'cron' ? (
+                                    <div>
+                                        <label>expression</label>
+                                        <input
+                                            value={selectedSchedule.expression || ''}
+                                            onChange={(e) =>
+                                                updateScheduleAt(selectedScheduleIndex, {
+                                                    ...selectedSchedule,
+                                                    expression: e.target.value,
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label>seconds</label>
+                                        <input
+                                            type="number"
+                                            value={selectedSchedule.seconds || 60}
+                                            onChange={(e) =>
+                                                updateScheduleAt(selectedScheduleIndex, {
+                                                    ...selectedSchedule,
+                                                    seconds: Number(e.target.value),
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="top-gap">
+                                <label>steps_tree</label>
+                                <StepTreeEditor
+                                    nodes={selectedSchedule.steps_tree || []}
+                                    onChange={(steps_tree) =>
+                                        updateScheduleAt(selectedScheduleIndex, {
+                                            ...selectedSchedule,
+                                            steps_tree,
+                                        })
+                                    }
+                                />
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="muted top-gap">暂无 Schedule，请先新增。</div>
+                    )}
                 </section>
             )}
 

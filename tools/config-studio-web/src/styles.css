@@ -258,6 +258,40 @@ button {
     font-size: 13px;
 }
 
+.scheduler-help {
+    margin-top: 10px;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: #f9fdfb;
+}
+
+.scheduler-help summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.scheduler-help-content {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text);
+}
+
+.scheduler-help-content h4 {
+    margin: 10px 0 6px;
+}
+
+.scheduler-help-content ul,
+.scheduler-help-content ol {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.scheduler-help-content li {
+    margin: 4px 0;
+}
+
 pre {
     margin: 0;
     white-space: pre-wrap;

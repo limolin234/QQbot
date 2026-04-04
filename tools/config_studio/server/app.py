@@ -29,7 +29,19 @@ from .services import (
 
 APP_TITLE = "QQBot Config Studio API"
 APP_VERSION = "0.1.0"
-REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _detect_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    # Walk up from tools/config_studio/server/app.py and locate the project root.
+    # A valid root must at least contain workflows/ and README.md for this repo.
+    for parent in current.parents:
+        if (parent / "workflows").exists() and (parent / "README.md").exists():
+            return parent
+    return current.parents[3]
+
+
+REPO_ROOT = _detect_repo_root()
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION)
 app.add_middleware(
