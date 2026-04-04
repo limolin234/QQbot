@@ -151,16 +151,36 @@ const ACTION_SCHEMAS: ActionSchema[] = [
 
 const ACTION_OPTIONS = ACTION_SCHEMAS.map((item) => ({ value: item.action, label: `${item.action} (${item.label})` }));
 
+const CHAT_TYPE_LABELS: Record<'group' | 'private', string> = {
+    group: '群聊',
+    private: '私聊',
+};
+
+const AUTO_TRIGGER_MODE_LABELS: Record<string, string> = {
+    always: '始终触发',
+    keyword: '关键词触发',
+    at_bot: '@机器人触发',
+    ai_decide: 'AI 决策触发',
+    'ai_decide || keyword': 'AI 决策或关键词触发',
+    'at_bot || keyword': '@机器人或关键词触发',
+};
+
+const DIDA_TRIGGER_MODE_LABELS: Record<string, string> = {
+    ai_decide: 'AI 决策触发',
+    always: '始终触发',
+    keyword: '关键词触发',
+};
+
 type FixedSection = {
     file_name: string;
     config: JsonObject;
 };
 
 const FIXED_AGENT_OPTIONS: Array<{ key: FixedAgentKey; label: string }> = [
-    { key: 'summary_config', label: 'Summary Agent' },
-    { key: 'forward_config', label: 'Forward Agent' },
-    { key: 'auto_reply_config', label: 'Auto Reply Agent' },
-    { key: 'dida_agent_config', label: 'Dida Agent' },
+    { key: 'summary_config', label: '总结 Agent' },
+    { key: 'forward_config', label: '转发 Agent' },
+    { key: 'auto_reply_config', label: '自动回复 Agent' },
+    { key: 'dida_agent_config', label: '滴答 Agent' },
 ];
 
 function asObject(value: JsonValue | undefined): JsonObject {
@@ -442,6 +462,54 @@ function StringListEditor({
     );
 }
 
+function SwitchField({
+    checked,
+    onChange,
+    label,
+}: {
+    checked: boolean;
+    onChange: (next: boolean) => void;
+    label: string;
+}) {
+    return (
+        <div className="switch-field">
+            <span>{label}</span>
+            <label className="switch" aria-label={label}>
+                <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+                <span className="slider" />
+            </label>
+        </div>
+    );
+}
+
+function FormModal({
+    open,
+    title,
+    onClose,
+    children,
+}: {
+    open: boolean;
+    title: string;
+    onClose: () => void;
+    children: JSX.Element;
+}) {
+    if (!open) return null;
+    return (
+        <div className="modal-mask" onClick={onClose}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+                <div className="row between">
+                    <h3>{title}</h3>
+                    <button onClick={onClose}>关闭</button>
+                </div>
+                <div className="modal-body">{children}</div>
+                <div className="row gap-8 top-gap">
+                    <button onClick={onClose}>保存并返回</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (next: SummaryConfig) => void }) {
     return (
         <div className="grid2">
@@ -510,14 +578,11 @@ function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (nex
                     onChange={(summary_group_ids) => onChange({ ...value, summary_group_ids })}
                 />
             </div>
-            <label className="row gap-8">
-                <input
-                    type="checkbox"
-                    checked={value.summary_global_overview}
-                    onChange={(e) => onChange({ ...value, summary_global_overview: e.target.checked })}
-                />
-                summary_global_overview
-            </label>
+            <SwitchField
+                checked={value.summary_global_overview}
+                onChange={(summary_global_overview) => onChange({ ...value, summary_global_overview })}
+                label="summary_global_overview"
+            />
             <div>
                 <label>summary_send_mode</label>
                 <select
@@ -530,14 +595,11 @@ function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (nex
                     <option value="multi_message">multi_message</option>
                 </select>
             </div>
-            <label className="row gap-8">
-                <input
-                    type="checkbox"
-                    checked={value.summary_group_reduce_enabled}
-                    onChange={(e) => onChange({ ...value, summary_group_reduce_enabled: e.target.checked })}
-                />
-                summary_group_reduce_enabled
-            </label>
+            <SwitchField
+                checked={value.summary_group_reduce_enabled}
+                onChange={(summary_group_reduce_enabled) => onChange({ ...value, summary_group_reduce_enabled })}
+                label="summary_group_reduce_enabled"
+            />
         </div>
     );
 }
@@ -591,375 +653,398 @@ function AutoReplyRulesEditor({
     rules: AutoReplyRule[];
     onChange: (next: AutoReplyRule[]) => void;
 }) {
+    const [editingBasicIdx, setEditingBasicIdx] = useState<number | null>(null);
+    const [editingPromptIdx, setEditingPromptIdx] = useState<number | null>(null);
+
+    const updateRule = (idx: number, patch: Partial<AutoReplyRule>) => {
+        const next = [...rules];
+        next[idx] = { ...next[idx], ...patch };
+        onChange(next);
+    };
+
+    const basicRule = editingBasicIdx !== null ? rules[editingBasicIdx] : null;
+    const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
+
     return (
         <div className="rule-box">
             {rules.map((rule, idx) => (
                 <div key={idx} className="rule-item">
                     <div className="row between">
-                        <strong>Rule {idx + 1}</strong>
-                        <button
-                            onClick={() => {
-                                const next = [...rules];
-                                next.splice(idx, 1);
-                                onChange(next);
-                            }}
-                        >
-                            删除 Rule
-                        </button>
+                        <strong>规则 {idx + 1}</strong>
+                        <div className="row gap-8">
+                            <SwitchField checked={rule.enabled} onChange={(enabled) => updateRule(idx, { enabled })} label="启用规则" />
+                            <button onClick={() => setEditingBasicIdx(idx)}>编辑基础参数</button>
+                            <button onClick={() => setEditingPromptIdx(idx)}>编辑提示词</button>
+                            <button
+                                onClick={() => {
+                                    const next = [...rules];
+                                    next.splice(idx, 1);
+                                    onChange(next);
+                                }}
+                            >
+                                删除规则
+                            </button>
+                        </div>
                     </div>
-                    <div className="grid2">
-                        <label className="row gap-8">
-                            <input
-                                type="checkbox"
-                                checked={rule.enabled}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, enabled: e.target.checked };
-                                    onChange(next);
-                                }}
-                            />
-                            enabled
-                        </label>
-                        <div>
-                            <label>chat_type</label>
-                            <select
-                                value={rule.chat_type}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, chat_type: e.target.value as 'group' | 'private' };
-                                    onChange(next);
-                                }}
-                            >
-                                <option value="group">group</option>
-                                <option value="private">private</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label>number</label>
-                            <input
-                                value={rule.number}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, number: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div>
-                            <label>trigger_mode</label>
-                            <select
-                                value={rule.trigger_mode}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, trigger_mode: e.target.value };
-                                    onChange(next);
-                                }}
-                            >
-                                <option value="always">always</option>
-                                <option value="keyword">keyword</option>
-                                <option value="at_bot">at_bot</option>
-                                <option value="ai_decide">ai_decide</option>
-                                <option value="ai_decide || keyword">ai_decide || keyword</option>
-                                <option value="at_bot || keyword">at_bot || keyword</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label>temperature (可选)</label>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={rule.temperature ?? 0.4}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, temperature: Number(e.target.value) };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>keywords</label>
-                            <StringListEditor
-                                values={rule.keywords}
-                                onChange={(keywords) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, keywords };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>ai_decision_prompt</label>
-                            <textarea
-                                rows={6}
-                                value={rule.ai_decision_prompt}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, ai_decision_prompt: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>reply_prompt</label>
-                            <textarea
-                                rows={6}
-                                value={rule.reply_prompt}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, reply_prompt: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
+                    <div className="rule-preview">
+                        {CHAT_TYPE_LABELS[rule.chat_type]} | {AUTO_TRIGGER_MODE_LABELS[rule.trigger_mode] || rule.trigger_mode} | {rule.number || '未填写目标号'}
                     </div>
                 </div>
             ))}
-            <button onClick={() => onChange([...rules, makeDefaultAutoRule()])}>+ 添加 Rule</button>
+            <button onClick={() => onChange([...rules, makeDefaultAutoRule()])}>+ 添加规则</button>
+
+            <FormModal
+                open={basicRule !== null}
+                title={editingBasicIdx !== null ? `规则 ${editingBasicIdx + 1} 基础参数` : '基础参数'}
+                onClose={() => setEditingBasicIdx(null)}
+            >
+                {basicRule ? (
+                    <div className="grid2">
+                        <SwitchField
+                            checked={basicRule.enabled}
+                            onChange={(enabled) => editingBasicIdx !== null && updateRule(editingBasicIdx, { enabled })}
+                            label="启用规则"
+                        />
+                        <div>
+                            <label>聊天类型</label>
+                            <select
+                                value={basicRule.chat_type}
+                                onChange={(e) =>
+                                    editingBasicIdx !== null && updateRule(editingBasicIdx, { chat_type: e.target.value as 'group' | 'private' })
+                                }
+                            >
+                                <option value="group">群聊</option>
+                                <option value="private">私聊</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>目标号（群号/QQ）</label>
+                            <input
+                                value={basicRule.number}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { number: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label>触发模式</label>
+                            <select
+                                value={basicRule.trigger_mode}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { trigger_mode: e.target.value })}
+                            >
+                                <option value="always">始终触发</option>
+                                <option value="keyword">关键词触发</option>
+                                <option value="at_bot">@机器人触发</option>
+                                <option value="ai_decide">AI 决策触发</option>
+                                <option value="ai_decide || keyword">AI 决策或关键词触发</option>
+                                <option value="at_bot || keyword">@机器人或关键词触发</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>温度（可选）</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={basicRule.temperature ?? 0.4}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { temperature: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>关键词列表</label>
+                            <StringListEditor
+                                values={basicRule.keywords}
+                                onChange={(keywords) => editingBasicIdx !== null && updateRule(editingBasicIdx, { keywords })}
+                            />
+                        </div>
+                    </div>
+                ) : (
+                    <div />
+                )}
+            </FormModal>
+
+            <FormModal
+                open={promptRule !== null}
+                title={editingPromptIdx !== null ? `规则 ${editingPromptIdx + 1} 提示词` : '提示词'}
+                onClose={() => setEditingPromptIdx(null)}
+            >
+                {promptRule ? (
+                    <div>
+                        <label>AI 决策提示词</label>
+                        <textarea
+                            rows={8}
+                            value={promptRule.ai_decision_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { ai_decision_prompt: e.target.value })}
+                        />
+                        <label>回复提示词</label>
+                        <textarea
+                            rows={8}
+                            value={promptRule.reply_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { reply_prompt: e.target.value })}
+                        />
+                    </div>
+                ) : (
+                    <div />
+                )}
+            </FormModal>
         </div>
     );
 }
 
 function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (next: DidaRule[]) => void }) {
+    const [editingBasicIdx, setEditingBasicIdx] = useState<number | null>(null);
+    const [editingPromptIdx, setEditingPromptIdx] = useState<number | null>(null);
+
+    const updateRule = (idx: number, patch: Partial<DidaRule>) => {
+        const next = [...rules];
+        next[idx] = { ...next[idx], ...patch };
+        onChange(next);
+    };
+
+    const basicRule = editingBasicIdx !== null ? rules[editingBasicIdx] : null;
+    const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
+
     return (
         <div className="rule-box">
             {rules.map((rule, idx) => (
                 <div key={idx} className="rule-item">
                     <div className="row between">
-                        <strong>Rule {idx + 1}</strong>
-                        <button
-                            onClick={() => {
-                                const next = [...rules];
-                                next.splice(idx, 1);
-                                onChange(next);
-                            }}
-                        >
-                            删除 Rule
-                        </button>
-                    </div>
-                    <div className="grid2">
-                        <label className="row gap-8">
-                            <input
-                                type="checkbox"
-                                checked={rule.enabled}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, enabled: e.target.checked };
-                                    onChange(next);
-                                }}
-                            />
-                            enabled
-                        </label>
-                        <label className="row gap-8">
-                            <input
-                                type="checkbox"
+                        <strong>规则 {idx + 1}</strong>
+                        <div className="row gap-8">
+                            <SwitchField checked={rule.enabled} onChange={(enabled) => updateRule(idx, { enabled })} label="启用规则" />
+                            <SwitchField
                                 checked={rule.dida_enabled}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, dida_enabled: e.target.checked };
-                                    onChange(next);
-                                }}
+                                onChange={(dida_enabled) => updateRule(idx, { dida_enabled })}
+                                label="启用滴答同步"
                             />
-                            dida_enabled
-                        </label>
-                        <div>
-                            <label>chat_type</label>
-                            <select
-                                value={rule.chat_type}
-                                onChange={(e) => {
+                            <button onClick={() => setEditingBasicIdx(idx)}>编辑基础参数</button>
+                            <button onClick={() => setEditingPromptIdx(idx)}>编辑提示词</button>
+                            <button
+                                onClick={() => {
                                     const next = [...rules];
-                                    next[idx] = { ...rule, chat_type: e.target.value as 'group' | 'private' };
+                                    next.splice(idx, 1);
                                     onChange(next);
                                 }}
                             >
-                                <option value="group">group</option>
-                                <option value="private">private</option>
-                            </select>
+                                删除规则
+                            </button>
                         </div>
-                        <div>
-                            <label>number</label>
-                            <input
-                                value={rule.number}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, number: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div>
-                            <label>trigger_mode</label>
-                            <select
-                                value={rule.trigger_mode}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, trigger_mode: e.target.value };
-                                    onChange(next);
-                                }}
-                            >
-                                <option value="ai_decide">ai_decide</option>
-                                <option value="always">always</option>
-                                <option value="keyword">keyword</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label>action_temperature</label>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={rule.action_temperature}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, action_temperature: Number(e.target.value) };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div>
-                            <label>reply_temperature</label>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={rule.reply_temperature}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, reply_temperature: Number(e.target.value) };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>ai_decision_prompt</label>
-                            <textarea
-                                rows={6}
-                                value={rule.ai_decision_prompt}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, ai_decision_prompt: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>action_prompt</label>
-                            <textarea
-                                rows={6}
-                                value={rule.action_prompt}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, action_prompt: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
-                        <div className="full-row">
-                            <label>reply_prompt</label>
-                            <textarea
-                                rows={6}
-                                value={rule.reply_prompt}
-                                onChange={(e) => {
-                                    const next = [...rules];
-                                    next[idx] = { ...rule, reply_prompt: e.target.value };
-                                    onChange(next);
-                                }}
-                            />
-                        </div>
+                    </div>
+                    <div className="rule-preview">
+                        {CHAT_TYPE_LABELS[rule.chat_type]} | {DIDA_TRIGGER_MODE_LABELS[rule.trigger_mode] || rule.trigger_mode} | {rule.number || '未填写目标号'}
                     </div>
                 </div>
             ))}
-            <button onClick={() => onChange([...rules, makeDefaultDidaRule()])}>+ 添加 Rule</button>
+            <button onClick={() => onChange([...rules, makeDefaultDidaRule()])}>+ 添加规则</button>
+
+            <FormModal
+                open={basicRule !== null}
+                title={editingBasicIdx !== null ? `规则 ${editingBasicIdx + 1} 基础参数` : '基础参数'}
+                onClose={() => setEditingBasicIdx(null)}
+            >
+                {basicRule ? (
+                    <div className="grid2">
+                        <SwitchField
+                            checked={basicRule.enabled}
+                            onChange={(enabled) => editingBasicIdx !== null && updateRule(editingBasicIdx, { enabled })}
+                            label="启用规则"
+                        />
+                        <SwitchField
+                            checked={basicRule.dida_enabled}
+                            onChange={(dida_enabled) => editingBasicIdx !== null && updateRule(editingBasicIdx, { dida_enabled })}
+                            label="启用滴答同步"
+                        />
+                        <div>
+                            <label>聊天类型</label>
+                            <select
+                                value={basicRule.chat_type}
+                                onChange={(e) =>
+                                    editingBasicIdx !== null && updateRule(editingBasicIdx, { chat_type: e.target.value as 'group' | 'private' })
+                                }
+                            >
+                                <option value="group">群聊</option>
+                                <option value="private">私聊</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>目标号（群号/QQ）</label>
+                            <input
+                                value={basicRule.number}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { number: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label>触发模式</label>
+                            <select
+                                value={basicRule.trigger_mode}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { trigger_mode: e.target.value })}
+                            >
+                                <option value="ai_decide">AI 决策触发</option>
+                                <option value="always">始终触发</option>
+                                <option value="keyword">关键词触发</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>动作温度</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={basicRule.action_temperature}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { action_temperature: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div>
+                            <label>回复温度</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={basicRule.reply_temperature}
+                                onChange={(e) => editingBasicIdx !== null && updateRule(editingBasicIdx, { reply_temperature: Number(e.target.value) })}
+                            />
+                        </div>
+                    </div>
+                ) : (
+                    <div />
+                )}
+            </FormModal>
+
+            <FormModal
+                open={promptRule !== null}
+                title={editingPromptIdx !== null ? `规则 ${editingPromptIdx + 1} 提示词` : '提示词'}
+                onClose={() => setEditingPromptIdx(null)}
+            >
+                {promptRule ? (
+                    <div>
+                        <label>AI 决策提示词</label>
+                        <textarea
+                            rows={7}
+                            value={promptRule.ai_decision_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { ai_decision_prompt: e.target.value })}
+                        />
+                        <label>动作提示词</label>
+                        <textarea
+                            rows={7}
+                            value={promptRule.action_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { action_prompt: e.target.value })}
+                        />
+                        <label>回复提示词</label>
+                        <textarea
+                            rows={7}
+                            value={promptRule.reply_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { reply_prompt: e.target.value })}
+                        />
+                    </div>
+                ) : (
+                    <div />
+                )}
+            </FormModal>
         </div>
     );
 }
 
 function AutoReplyForm({ value, onChange }: { value: AutoReplyConfig; onChange: (next: AutoReplyConfig) => void }) {
+    const [openBasicModal, setOpenBasicModal] = useState(false);
+
     return (
-        <div className="grid2">
-            <div>
-                <label>model</label>
-                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+        <div>
+            <div className="config-summary-card">
+                <div className="row between wrap gap-8">
+                    <strong>基础参数</strong>
+                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                </div>
+                <div className="rule-preview">
+                    模型：{value.model || '未设置'} | 决策模型：{value.decision_model || '未设置'} | 温度：{value.temperature}
+                </div>
+                <div className="rule-preview">
+                    上下文：{value.context_history_limit} 条 / {value.context_max_chars} 字 | 冷却：{value.min_reply_interval_seconds} 秒
+                </div>
             </div>
-            <div>
-                <label>decision_model</label>
-                <input
-                    value={value.decision_model || ''}
-                    onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
-                />
-            </div>
-            <div>
-                <label>temperature</label>
-                <input
-                    type="number"
-                    step="0.1"
-                    value={value.temperature}
-                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>context_history_limit</label>
-                <input
-                    type="number"
-                    value={value.context_history_limit}
-                    onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>context_max_chars</label>
-                <input
-                    type="number"
-                    value={value.context_max_chars}
-                    onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>context_window_seconds</label>
-                <input
-                    type="number"
-                    value={value.context_window_seconds}
-                    onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>min_reply_interval_seconds</label>
-                <input
-                    type="number"
-                    value={value.min_reply_interval_seconds}
-                    onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>flush_check_interval_seconds</label>
-                <input
-                    type="number"
-                    value={value.flush_check_interval_seconds}
-                    onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>pending_expire_seconds</label>
-                <input
-                    type="number"
-                    value={value.pending_expire_seconds}
-                    onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>pending_max_messages</label>
-                <input
-                    type="number"
-                    value={value.pending_max_messages}
-                    onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
-                />
-            </div>
-            <label className="row gap-8">
-                <input
-                    type="checkbox"
-                    checked={value.bypass_cooldown_when_at_bot}
-                    onChange={(e) => onChange({ ...value, bypass_cooldown_when_at_bot: e.target.checked })}
-                />
-                bypass_cooldown_when_at_bot
-            </label>
-            <div className="full-row">
-                <label>rules</label>
+
+            <FormModal open={openBasicModal} title="自动回复 Agent 基础参数" onClose={() => setOpenBasicModal(false)}>
+                <div className="grid2">
+                    <div>
+                        <label>回复模型</label>
+                        <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+                    </div>
+                    <div>
+                        <label>决策模型（可选）</label>
+                        <input
+                            value={value.decision_model || ''}
+                            onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
+                        />
+                    </div>
+                    <div>
+                        <label>温度</label>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={value.temperature}
+                            onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>上下文保留条数</label>
+                        <input
+                            type="number"
+                            value={value.context_history_limit}
+                            onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>上下文最大字数</label>
+                        <input
+                            type="number"
+                            value={value.context_max_chars}
+                            onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>上下文时间窗口（秒）</label>
+                        <input
+                            type="number"
+                            value={value.context_window_seconds}
+                            onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>最小回复间隔（秒）</label>
+                        <input
+                            type="number"
+                            value={value.min_reply_interval_seconds}
+                            onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>队列刷新间隔（秒）</label>
+                        <input
+                            type="number"
+                            value={value.flush_check_interval_seconds}
+                            onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>待处理过期时间（秒）</label>
+                        <input
+                            type="number"
+                            value={value.pending_expire_seconds}
+                            onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>待处理最大消息数</label>
+                        <input
+                            type="number"
+                            value={value.pending_max_messages}
+                            onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
+                        />
+                    </div>
+                    <SwitchField
+                        checked={value.bypass_cooldown_when_at_bot}
+                        onChange={(bypass_cooldown_when_at_bot) => onChange({ ...value, bypass_cooldown_when_at_bot })}
+                        label="@机器人时跳过冷却"
+                    />
+                </div>
+            </FormModal>
+
+            <div className="top-gap">
+                <label>规则列表</label>
                 <AutoReplyRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
             </div>
         </div>
@@ -967,102 +1052,119 @@ function AutoReplyForm({ value, onChange }: { value: AutoReplyConfig; onChange: 
 }
 
 function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: DidaConfig) => void }) {
+    const [openBasicModal, setOpenBasicModal] = useState(false);
+
     return (
-        <div className="grid2">
-            <div>
-                <label>model</label>
-                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+        <div>
+            <div className="config-summary-card">
+                <div className="row between wrap gap-8">
+                    <strong>基础参数</strong>
+                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                </div>
+                <div className="rule-preview">
+                    模型：{value.model || '未设置'} | 决策模型：{value.decision_model || '未设置'} | 温度：{value.temperature}
+                </div>
+                <div className="rule-preview">
+                    机器人QQ：{value.bot_qq || '未设置'} | 管理员数：{value.admin_qqs.length} | 冷却：{value.min_reply_interval_seconds} 秒
+                </div>
             </div>
-            <div>
-                <label>decision_model</label>
-                <input
-                    value={value.decision_model || ''}
-                    onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
-                />
-            </div>
-            <div>
-                <label>temperature</label>
-                <input
-                    type="number"
-                    step="0.1"
-                    value={value.temperature}
-                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>bot_qq</label>
-                <input value={value.bot_qq} onChange={(e) => onChange({ ...value, bot_qq: e.target.value })} />
-            </div>
-            <div className="full-row">
-                <label>admin_qqs</label>
-                <StringListEditor values={value.admin_qqs} onChange={(admin_qqs) => onChange({ ...value, admin_qqs })} />
-            </div>
-            <div>
-                <label>context_history_limit</label>
-                <input
-                    type="number"
-                    value={value.context_history_limit}
-                    onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>context_max_chars</label>
-                <input
-                    type="number"
-                    value={value.context_max_chars}
-                    onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>context_window_seconds</label>
-                <input
-                    type="number"
-                    value={value.context_window_seconds}
-                    onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>min_reply_interval_seconds</label>
-                <input
-                    type="number"
-                    value={value.min_reply_interval_seconds}
-                    onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>flush_check_interval_seconds</label>
-                <input
-                    type="number"
-                    value={value.flush_check_interval_seconds}
-                    onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>pending_expire_seconds</label>
-                <input
-                    type="number"
-                    value={value.pending_expire_seconds}
-                    onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>pending_max_messages</label>
-                <input
-                    type="number"
-                    value={value.pending_max_messages}
-                    onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
-                />
-            </div>
-            <label className="row gap-8">
-                <input
-                    type="checkbox"
-                    checked={value.bypass_cooldown_when_at_bot}
-                    onChange={(e) => onChange({ ...value, bypass_cooldown_when_at_bot: e.target.checked })}
-                />
-                bypass_cooldown_when_at_bot
-            </label>
-            <div className="full-row">
-                <label>rules</label>
+
+            <FormModal open={openBasicModal} title="滴答 Agent 基础参数" onClose={() => setOpenBasicModal(false)}>
+                <div className="grid2">
+                    <div>
+                        <label>回复模型</label>
+                        <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+                    </div>
+                    <div>
+                        <label>决策模型（可选）</label>
+                        <input
+                            value={value.decision_model || ''}
+                            onChange={(e) => onChange({ ...value, decision_model: e.target.value })}
+                        />
+                    </div>
+                    <div>
+                        <label>温度</label>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={value.temperature}
+                            onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>机器人 QQ</label>
+                        <input value={value.bot_qq} onChange={(e) => onChange({ ...value, bot_qq: e.target.value })} />
+                    </div>
+                    <div className="full-row">
+                        <label>管理员 QQ 列表</label>
+                        <StringListEditor values={value.admin_qqs} onChange={(admin_qqs) => onChange({ ...value, admin_qqs })} />
+                    </div>
+                    <div>
+                        <label>上下文保留条数</label>
+                        <input
+                            type="number"
+                            value={value.context_history_limit}
+                            onChange={(e) => onChange({ ...value, context_history_limit: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>上下文最大字数</label>
+                        <input
+                            type="number"
+                            value={value.context_max_chars}
+                            onChange={(e) => onChange({ ...value, context_max_chars: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>上下文时间窗口（秒）</label>
+                        <input
+                            type="number"
+                            value={value.context_window_seconds}
+                            onChange={(e) => onChange({ ...value, context_window_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>最小回复间隔（秒）</label>
+                        <input
+                            type="number"
+                            value={value.min_reply_interval_seconds}
+                            onChange={(e) => onChange({ ...value, min_reply_interval_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>队列刷新间隔（秒）</label>
+                        <input
+                            type="number"
+                            value={value.flush_check_interval_seconds}
+                            onChange={(e) => onChange({ ...value, flush_check_interval_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>待处理过期时间（秒）</label>
+                        <input
+                            type="number"
+                            value={value.pending_expire_seconds}
+                            onChange={(e) => onChange({ ...value, pending_expire_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>待处理最大消息数</label>
+                        <input
+                            type="number"
+                            value={value.pending_max_messages}
+                            onChange={(e) => onChange({ ...value, pending_max_messages: Number(e.target.value) })}
+                        />
+                    </div>
+                    <SwitchField
+                        checked={value.bypass_cooldown_when_at_bot}
+                        onChange={(bypass_cooldown_when_at_bot) => onChange({ ...value, bypass_cooldown_when_at_bot })}
+                        label="@机器人时跳过冷却"
+                    />
+                </div>
+            </FormModal>
+
+            <div className="top-gap">
+                <label>规则列表</label>
                 <DidaRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
             </div>
         </div>
