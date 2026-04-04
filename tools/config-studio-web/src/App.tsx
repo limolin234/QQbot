@@ -12,53 +12,413 @@ import {
     saveEnv,
     testConnection,
 } from './api';
-import type { AgentConfigRoot, ScheduleConfig, StepNode, TabKey, TimelineEvent } from './types';
+import type {
+    AgentConfigRoot,
+    JsonObject,
+    JsonValue,
+    ScheduleConfig,
+    StepNode,
+    TabKey,
+    TimelineEvent,
+} from './types';
 
 function newId() {
     return Math.random().toString(36).slice(2, 10);
 }
 
-function ensureScheduler(agent: AgentConfigRoot): { timezone: string; schedules: ScheduleConfig[] } {
-    const root = agent.scheduler_manager as
-        | {
-            file_name?: string;
-            config?: { timezone?: string; schedules?: ScheduleConfig[] };
-        }
-        | undefined;
+function isObject(value: JsonValue | undefined): value is JsonObject {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 
-    if (!root) {
-        agent.scheduler_manager = {
-            file_name: 'scheduler_manager.py',
-            config: { timezone: 'Asia/Shanghai', schedules: [] },
-        };
+function asObject(value: JsonValue | undefined): JsonObject {
+    return isObject(value) ? value : {};
+}
+
+function cloneValue<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parseScalarByType(raw: string, type: 'string' | 'number' | 'boolean') {
+    if (type === 'number') {
+        const num = Number(raw);
+        return Number.isNaN(num) ? 0 : num;
     }
+    if (type === 'boolean') {
+        return raw === 'true';
+    }
+    return raw;
+}
 
-    const cfg = (agent.scheduler_manager as { config: { timezone?: string; schedules?: ScheduleConfig[] } }).config;
-    if (!cfg.timezone) cfg.timezone = 'Asia/Shanghai';
-    if (!cfg.schedules) cfg.schedules = [];
+function getValueType(value: JsonValue): 'string' | 'number' | 'boolean' | 'null' | 'array' | 'object' {
+    if (Array.isArray(value)) return 'array';
+    if (value === null) return 'null';
+    if (typeof value === 'object') return 'object';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    return 'string';
+}
+
+function createDefaultByKind(kind: 'string' | 'number' | 'boolean' | 'object' | 'array') {
+    if (kind === 'number') return 0;
+    if (kind === 'boolean') return false;
+    if (kind === 'object') return {};
+    if (kind === 'array') return [];
+    return '';
+}
+
+type ParamField =
+    | { key: string; label: string; kind: 'text' }
+    | { key: string; label: string; kind: 'number' }
+    | { key: string; label: string; kind: 'boolean' }
+    | { key: string; label: string; kind: 'string_list' }
+    | { key: string; label: string; kind: 'select'; options: string[] };
+
+const ACTION_PARAM_SCHEMAS: Record<string, ParamField[]> = {
+    'core.send_group_msg': [
+        { key: 'group_id', label: '群号', kind: 'text' },
+        { key: 'message', label: '消息内容', kind: 'text' },
+    ],
+    'core.send_private_msg': [
+        { key: 'user_id', label: '用户QQ', kind: 'text' },
+        { key: 'message', label: '消息内容', kind: 'text' },
+    ],
+    'dida.push_task_list': [
+        { key: 'group_id', label: '群号', kind: 'text' },
+        { key: 'user_qq', label: '用户QQ', kind: 'text' },
+        {
+            key: 'day_range',
+            label: '时间范围',
+            kind: 'select',
+            options: ['today', 'tomorrow', 'week', 'all'],
+        },
+        { key: 'limit', label: '任务数量上限', kind: 'number' },
+    ],
+    'dida.poll': [
+        { key: 'project_ids', label: '项目ID列表', kind: 'string_list' },
+        { key: 'max_tasks_scan_per_user', label: '每用户扫描上限', kind: 'number' },
+    ],
+    'summary.daily_report': [
+        {
+            key: 'run_mode',
+            label: '执行模式',
+            kind: 'select',
+            options: ['group', 'global'],
+        },
+        { key: 'send_to_groups', label: '目标群列表', kind: 'string_list' },
+    ],
+};
+
+function ensureScheduler(agent: AgentConfigRoot): { timezone: string; schedules: ScheduleConfig[] } {
+    const root = asObject(agent.scheduler_manager);
+    if (!root.file_name) {
+        root.file_name = 'scheduler_manager.py';
+    }
+    const config = asObject(root.config);
+    if (!config.timezone || typeof config.timezone !== 'string') {
+        config.timezone = 'Asia/Shanghai';
+    }
+    if (!Array.isArray(config.schedules)) {
+        config.schedules = [];
+    }
+    root.config = config;
+    agent.scheduler_manager = root;
 
     return {
-        timezone: cfg.timezone,
-        schedules: cfg.schedules,
+        timezone: String(config.timezone),
+        schedules: config.schedules as unknown as ScheduleConfig[],
     };
 }
 
 function normalizeStepsTree(nodes?: StepNode[]): StepNode[] {
     if (!nodes) return [];
-    return nodes.map((node) => {
-        const base: StepNode = {
-            id: node.id || newId(),
-            kind: node.kind,
-            action: node.action || '',
-            params: node.params || {},
-            name: node.name || '',
-            condition: node.condition || { source: 'env', key: '', op: 'eq', value: '' },
-            children: normalizeStepsTree(node.children),
-            then_steps: normalizeStepsTree(node.then_steps),
-            else_steps: normalizeStepsTree(node.else_steps),
-        };
-        return base;
-    });
+    return nodes.map((node) => ({
+        id: node.id || newId(),
+        kind: node.kind,
+        action: node.action || '',
+        params: asObject(node.params),
+        name: node.name || '',
+        condition: node.condition || { source: 'env', key: '', op: 'eq', value: '' },
+        children: normalizeStepsTree(node.children),
+        then_steps: normalizeStepsTree(node.then_steps),
+        else_steps: normalizeStepsTree(node.else_steps),
+    }));
+}
+
+function StringListEditor({
+    value,
+    onChange,
+}: {
+    value: string[];
+    onChange: (next: string[]) => void;
+}) {
+    return (
+        <div className="string-list">
+            {value.map((item, idx) => (
+                <div key={`${item}_${idx}`} className="row gap-8">
+                    <input
+                        value={item}
+                        onChange={(e) => {
+                            const next = [...value];
+                            next[idx] = e.target.value;
+                            onChange(next);
+                        }}
+                    />
+                    <button
+                        onClick={() => {
+                            const next = [...value];
+                            next.splice(idx, 1);
+                            onChange(next);
+                        }}
+                    >
+                        删除
+                    </button>
+                </div>
+            ))}
+            <button onClick={() => onChange([...value, ''])}>+ 新增</button>
+        </div>
+    );
+}
+
+function ActionParamsEditor({
+    action,
+    params,
+    onChange,
+}: {
+    action: string;
+    params: JsonObject;
+    onChange: (params: JsonObject) => void;
+}) {
+    const fields = ACTION_PARAM_SCHEMAS[action];
+    if (!fields) {
+        return (
+            <div>
+                <p>自定义动作参数</p>
+                <JsonFormEditor value={params} onChange={(next) => onChange(asObject(next))} depth={0} />
+            </div>
+        );
+    }
+
+    return (
+        <div className="grid2">
+            {fields.map((field) => {
+                const current = params[field.key] as JsonValue;
+                if (field.kind === 'text') {
+                    return (
+                        <div key={field.key}>
+                            <label>{field.label}</label>
+                            <input
+                                value={typeof current === 'string' ? current : ''}
+                                onChange={(e) => onChange({ ...params, [field.key]: e.target.value })}
+                            />
+                        </div>
+                    );
+                }
+                if (field.kind === 'number') {
+                    return (
+                        <div key={field.key}>
+                            <label>{field.label}</label>
+                            <input
+                                type="number"
+                                value={typeof current === 'number' ? current : 0}
+                                onChange={(e) => onChange({ ...params, [field.key]: Number(e.target.value) })}
+                            />
+                        </div>
+                    );
+                }
+                if (field.kind === 'boolean') {
+                    return (
+                        <label key={field.key} className="row gap-8">
+                            <input
+                                type="checkbox"
+                                checked={Boolean(current)}
+                                onChange={(e) => onChange({ ...params, [field.key]: e.target.checked })}
+                            />
+                            {field.label}
+                        </label>
+                    );
+                }
+                if (field.kind === 'string_list') {
+                    return (
+                        <div key={field.key} className="full-row">
+                            <label>{field.label}</label>
+                            <StringListEditor
+                                value={Array.isArray(current) ? current.map(String) : []}
+                                onChange={(next) => onChange({ ...params, [field.key]: next })}
+                            />
+                        </div>
+                    );
+                }
+                return (
+                    <div key={field.key}>
+                        <label>{field.label}</label>
+                        <select
+                            value={typeof current === 'string' ? current : field.options[0]}
+                            onChange={(e) => onChange({ ...params, [field.key]: e.target.value })}
+                        >
+                            {field.options.map((option) => (
+                                <option key={option} value={option}>
+                                    {option}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+function JsonFormEditor({
+    value,
+    onChange,
+    depth,
+}: {
+    value: JsonValue;
+    onChange: (next: JsonValue) => void;
+    depth: number;
+}) {
+    const valueType = getValueType(value);
+
+    if (valueType === 'string') {
+        return (
+            <input
+                value={String(value)}
+                onChange={(e) => onChange(e.target.value)}
+                className={depth > 0 ? 'compact' : ''}
+            />
+        );
+    }
+
+    if (valueType === 'number') {
+        return (
+            <input
+                type="number"
+                value={Number(value)}
+                onChange={(e) => onChange(Number(e.target.value))}
+                className={depth > 0 ? 'compact' : ''}
+            />
+        );
+    }
+
+    if (valueType === 'boolean') {
+        return (
+            <label className="row gap-8">
+                <input
+                    type="checkbox"
+                    checked={Boolean(value)}
+                    onChange={(e) => onChange(e.target.checked)}
+                />
+                <span>{Boolean(value) ? 'true' : 'false'}</span>
+            </label>
+        );
+    }
+
+    if (valueType === 'null') {
+        return <span className="muted">null（请改类型）</span>;
+    }
+
+    if (valueType === 'array') {
+        const arr = value as JsonValue[];
+        return (
+            <div className="array-box">
+                {arr.map((item, idx) => (
+                    <div key={idx} className="array-item">
+                        <JsonFormEditor
+                            value={item}
+                            depth={depth + 1}
+                            onChange={(next) => {
+                                const updated = [...arr];
+                                updated[idx] = next;
+                                onChange(updated);
+                            }}
+                        />
+                        <button
+                            onClick={() => {
+                                const updated = [...arr];
+                                updated.splice(idx, 1);
+                                onChange(updated);
+                            }}
+                        >
+                            删除
+                        </button>
+                    </div>
+                ))}
+                <div className="row gap-8 wrap">
+                    {(['string', 'number', 'boolean', 'object', 'array'] as const).map((kind) => (
+                        <button key={kind} onClick={() => onChange([...arr, createDefaultByKind(kind)])}>
+                            + {kind}
+                        </button>
+                    ))}
+                </div>
+            </div>
+        );
+    }
+
+    const obj = value as JsonObject;
+    return (
+        <div className="object-box">
+            {Object.entries(obj).map(([k, v]) => (
+                <div key={k} className="object-item">
+                    <label>{k}</label>
+                    <div className="row gap-8 align-start">
+                        <div className="grow">
+                            <JsonFormEditor
+                                value={v}
+                                depth={depth + 1}
+                                onChange={(next) => onChange({ ...obj, [k]: next })}
+                            />
+                        </div>
+                        <button
+                            onClick={() => {
+                                const next: JsonObject = { ...obj };
+                                delete next[k];
+                                onChange(next);
+                            }}
+                        >
+                            删除键
+                        </button>
+                    </div>
+                </div>
+            ))}
+            <ObjectAddField
+                onAdd={(name, kind) => {
+                    if (!name.trim()) return;
+                    if (name in obj) return;
+                    onChange({ ...obj, [name]: createDefaultByKind(kind) });
+                }}
+            />
+        </div>
+    );
+}
+
+function ObjectAddField({
+    onAdd,
+}: {
+    onAdd: (name: string, kind: 'string' | 'number' | 'boolean' | 'object' | 'array') => void;
+}) {
+    const [name, setName] = useState('');
+    const [kind, setKind] = useState<'string' | 'number' | 'boolean' | 'object' | 'array'>('string');
+
+    return (
+        <div className="row gap-8 wrap">
+            <input placeholder="新字段名" value={name} onChange={(e) => setName(e.target.value)} />
+            <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+                <option value="string">string</option>
+                <option value="number">number</option>
+                <option value="boolean">boolean</option>
+                <option value="object">object</option>
+                <option value="array">array</option>
+            </select>
+            <button
+                onClick={() => {
+                    onAdd(name, kind);
+                    setName('');
+                }}
+            >
+                + 添加字段
+            </button>
+        </div>
+    );
 }
 
 function NodeEditor({
@@ -78,7 +438,7 @@ function NodeEditor({
             {
                 id: newId(),
                 kind,
-                action: '',
+                action: 'core.send_group_msg',
                 params: {},
                 name: '',
                 condition: { source: 'env', key: '', op: 'eq', value: '' },
@@ -135,26 +495,35 @@ function NodeEditor({
                     </div>
                     {node.kind === 'action' && (
                         <>
-                            <input
-                                placeholder="action id, e.g. core.send_group_msg"
-                                value={node.action || ''}
+                            <label>动作</label>
+                            <select
+                                value={node.action || 'custom'}
                                 onChange={(e) => updateNode(idx, { action: e.target.value })}
-                            />
-                            <textarea
-                                rows={4}
-                                value={JSON.stringify(node.params || {}, null, 2)}
-                                onChange={(e) => {
-                                    try {
-                                        updateNode(idx, { params: JSON.parse(e.target.value) });
-                                    } catch {
-                                        // Ignore parse errors while typing.
-                                    }
-                                }}
+                            >
+                                {Object.keys(ACTION_PARAM_SCHEMAS).map((actionKey) => (
+                                    <option key={actionKey} value={actionKey}>
+                                        {actionKey}
+                                    </option>
+                                ))}
+                                <option value="custom">custom</option>
+                            </select>
+                            {(node.action || '') === 'custom' ? (
+                                <input
+                                    placeholder="输入完整 action id"
+                                    value={node.action || ''}
+                                    onChange={(e) => updateNode(idx, { action: e.target.value })}
+                                />
+                            ) : null}
+                            <ActionParamsEditor
+                                action={node.action || ''}
+                                params={asObject(node.params)}
+                                onChange={(params) => updateNode(idx, { params })}
                             />
                         </>
                     )}
                     {node.kind === 'group' && (
                         <>
+                            <label>组名称</label>
                             <input
                                 placeholder="group name"
                                 value={node.name || ''}
@@ -170,42 +539,62 @@ function NodeEditor({
                     {node.kind === 'if' && (
                         <>
                             <div className="grid4">
-                                <input
-                                    placeholder="source: env/context"
-                                    value={node.condition?.source || ''}
-                                    onChange={(e) =>
-                                        updateNode(idx, {
-                                            condition: { ...(node.condition || {}), source: e.target.value },
-                                        })
-                                    }
-                                />
-                                <input
-                                    placeholder="key"
-                                    value={node.condition?.key || ''}
-                                    onChange={(e) =>
-                                        updateNode(idx, {
-                                            condition: { ...(node.condition || {}), key: e.target.value },
-                                        })
-                                    }
-                                />
-                                <input
-                                    placeholder="op(eq/ne/contains/in/truthy/falsy)"
-                                    value={node.condition?.op || ''}
-                                    onChange={(e) =>
-                                        updateNode(idx, {
-                                            condition: { ...(node.condition || {}), op: e.target.value },
-                                        })
-                                    }
-                                />
-                                <input
-                                    placeholder="value"
-                                    value={node.condition?.value || ''}
-                                    onChange={(e) =>
-                                        updateNode(idx, {
-                                            condition: { ...(node.condition || {}), value: e.target.value },
-                                        })
-                                    }
-                                />
+                                <div>
+                                    <label>source</label>
+                                    <select
+                                        value={node.condition?.source || 'env'}
+                                        onChange={(e) =>
+                                            updateNode(idx, {
+                                                condition: { ...(node.condition || {}), source: e.target.value },
+                                            })
+                                        }
+                                    >
+                                        <option value="env">env</option>
+                                        <option value="context">context</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>key</label>
+                                    <input
+                                        placeholder="key"
+                                        value={node.condition?.key || ''}
+                                        onChange={(e) =>
+                                            updateNode(idx, {
+                                                condition: { ...(node.condition || {}), key: e.target.value },
+                                            })
+                                        }
+                                    />
+                                </div>
+                                <div>
+                                    <label>op</label>
+                                    <select
+                                        value={node.condition?.op || 'eq'}
+                                        onChange={(e) =>
+                                            updateNode(idx, {
+                                                condition: { ...(node.condition || {}), op: e.target.value },
+                                            })
+                                        }
+                                    >
+                                        <option value="eq">eq</option>
+                                        <option value="ne">ne</option>
+                                        <option value="contains">contains</option>
+                                        <option value="in">in</option>
+                                        <option value="truthy">truthy</option>
+                                        <option value="falsy">falsy</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label>value</label>
+                                    <input
+                                        placeholder="value"
+                                        value={node.condition?.value || ''}
+                                        onChange={(e) =>
+                                            updateNode(idx, {
+                                                condition: { ...(node.condition || {}), value: e.target.value },
+                                            })
+                                        }
+                                    />
+                                </div>
                             </div>
                             <NodeEditor
                                 title="THEN"
@@ -236,8 +625,6 @@ export default function App() {
     const [llmApiBaseUrl, setLlmApiBaseUrl] = useState('');
 
     const [activeSection, setActiveSection] = useState('');
-    const [sectionText, setSectionText] = useState('{}');
-
     const [selectedSchedule, setSelectedSchedule] = useState(0);
     const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
 
@@ -265,14 +652,14 @@ export default function App() {
                 setStatus('loading');
                 const all = await getAllConfig();
                 const raw = await getAgentRaw();
-                setAgent(all.agent || {});
+                setAgent((all.agent || {}) as AgentConfigRoot);
                 setRawYaml(raw.raw_yaml || '');
                 setLlmApiKey(all.env?.LLM_API_KEY || '');
                 setLlmApiBaseUrl(all.env?.LLM_API_BASE_URL || '');
+
                 const sections = Object.keys(all.agent || {});
                 if (sections.length > 0) {
                     setActiveSection(sections[0]);
-                    setSectionText(JSON.stringify((all.agent as Record<string, unknown>)[sections[0]], null, 2));
                 }
                 const history = await listSnapshots();
                 setSnapshots(history.snapshots || []);
@@ -293,7 +680,7 @@ export default function App() {
     }, [llmApiKey, llmApiBaseUrl, status]);
 
     const updateAgent = (next: AgentConfigRoot) => {
-        setAgent({ ...next });
+        setAgent(cloneValue(next));
     };
 
     const saveAgentFull = async () => {
@@ -309,56 +696,68 @@ export default function App() {
         try {
             await saveAgentRaw(rawYaml);
             const all = await getAllConfig();
-            setAgent(all.agent || {});
+            setAgent((all.agent || {}) as AgentConfigRoot);
             setStatus('saved');
         } catch (e) {
             setError(String(e));
         }
     };
 
-    const changeSection = (name: string) => {
+    const addSection = () => {
+        const base = 'new_section';
+        let index = 1;
+        let name = `${base}_${index}`;
+        while (Object.keys(agent).includes(name)) {
+            index += 1;
+            name = `${base}_${index}`;
+        }
+        const next: AgentConfigRoot = {
+            ...agent,
+            [name]: {
+                file_name: `${name}.py`,
+                config: {},
+            },
+        };
+        updateAgent(next);
         setActiveSection(name);
-        setSectionText(JSON.stringify((agent as Record<string, unknown>)[name], null, 2));
     };
 
-    const saveSection = async () => {
-        try {
-            const parsed = JSON.parse(sectionText);
-            const next = { ...(agent as Record<string, unknown>), [activeSection]: parsed };
-            updateAgent(next as AgentConfigRoot);
-            await saveAgent(next);
-            setStatus('saved');
-        } catch (e) {
-            setError(`Section JSON invalid: ${String(e)}`);
-        }
+    const removeSection = (name: string) => {
+        const next: AgentConfigRoot = cloneValue(agent);
+        delete next[name];
+        updateAgent(next);
+        const sections = Object.keys(next);
+        setActiveSection(sections[0] || '');
+    };
+
+    const updateSectionValue = (name: string, value: JsonValue) => {
+        const next: AgentConfigRoot = cloneValue(agent);
+        next[name] = value;
+        updateAgent(next);
     };
 
     const updateSchedules = (nextSchedules: ScheduleConfig[]) => {
-        const next = { ...(agent as Record<string, unknown>) };
-        const schedulerManager = (next.scheduler_manager as Record<string, unknown>) || {
-            file_name: 'scheduler_manager.py',
-            config: {},
-        };
-        const config = (schedulerManager.config as Record<string, unknown>) || {};
+        const next = cloneValue(agent as AgentConfigRoot);
+        const schedulerManager = asObject(next.scheduler_manager);
+        const config = asObject(schedulerManager.config);
         config.timezone = scheduler.timezone;
-        config.schedules = nextSchedules;
+        config.schedules = nextSchedules as unknown as JsonValue;
+        schedulerManager.file_name = (schedulerManager.file_name as string) || 'scheduler_manager.py';
         schedulerManager.config = config;
         next.scheduler_manager = schedulerManager;
-        updateAgent(next as AgentConfigRoot);
+        updateAgent(next);
     };
 
     const updateTimezone = (timezone: string) => {
-        const next = { ...(agent as Record<string, unknown>) };
-        const schedulerManager = (next.scheduler_manager as Record<string, unknown>) || {
-            file_name: 'scheduler_manager.py',
-            config: {},
-        };
-        const config = (schedulerManager.config as Record<string, unknown>) || {};
+        const next = cloneValue(agent as AgentConfigRoot);
+        const schedulerManager = asObject(next.scheduler_manager);
+        const config = asObject(schedulerManager.config);
         config.timezone = timezone;
-        config.schedules = schedules;
+        config.schedules = schedules as unknown as JsonValue;
+        schedulerManager.file_name = (schedulerManager.file_name as string) || 'scheduler_manager.py';
         schedulerManager.config = config;
         next.scheduler_manager = schedulerManager;
-        updateAgent(next as AgentConfigRoot);
+        updateAgent(next);
     };
 
     const addSchedule = () => {
@@ -431,6 +830,8 @@ export default function App() {
         }
     };
 
+    const sectionValue = activeSection ? (agent[activeSection] as JsonValue) : {};
+
     return (
         <div className="layout">
             <header className="topbar">
@@ -468,24 +869,48 @@ export default function App() {
             {tab === 'agent' && (
                 <section className="panel two-col">
                     <div className="card">
-                        <h3>Section 编辑</h3>
-                        <select value={activeSection} onChange={(e) => changeSection(e.target.value)}>
-                            {Object.keys(agent).map((k) => (
-                                <option key={k} value={k}>
-                                    {k}
-                                </option>
+                        <div className="row between">
+                            <h3>Section 列表</h3>
+                            <button onClick={addSection}>+ 新增 Section</button>
+                        </div>
+                        <ul className="list">
+                            {Object.keys(agent).map((sectionName) => (
+                                <li key={sectionName} className={activeSection === sectionName ? 'selected' : ''}>
+                                    <button onClick={() => setActiveSection(sectionName)}>{sectionName}</button>
+                                    {sectionName !== 'scheduler_manager' ? (
+                                        <button onClick={() => removeSection(sectionName)}>删除</button>
+                                    ) : null}
+                                </li>
                             ))}
-                        </select>
-                        <textarea rows={18} value={sectionText} onChange={(e) => setSectionText(e.target.value)} />
+                        </ul>
                         <div className="row gap-8">
-                            <button onClick={saveSection}>保存当前 Section</button>
-                            <button onClick={saveAgentFull}>保存全部</button>
+                            <button onClick={saveAgentFull}>保存全部配置</button>
                         </div>
                     </div>
                     <div className="card">
-                        <h3>高级模式（原始 YAML）</h3>
-                        <textarea rows={22} value={rawYaml} onChange={(e) => setRawYaml(e.target.value)} />
-                        <button onClick={saveRaw}>保存原始 YAML</button>
+                        <h3>Section 表单编辑</h3>
+                        {activeSection ? (
+                            <>
+                                <p>当前: {activeSection}</p>
+                                <JsonFormEditor
+                                    value={sectionValue}
+                                    depth={0}
+                                    onChange={(next) => updateSectionValue(activeSection, next)}
+                                />
+                                <div className="row gap-8 top-gap">
+                                    <button onClick={saveAgentFull}>保存当前修改</button>
+                                </div>
+                            </>
+                        ) : (
+                            <p>暂无 Section，请先新增。</p>
+                        )}
+                    </div>
+                    <div className="card full-row">
+                        <details>
+                            <summary>高级模式（原始 YAML）</summary>
+                            <textarea rows={18} value={rawYaml} onChange={(e) => setRawYaml(e.target.value)} />
+                            <button onClick={saveRaw}>保存原始 YAML</button>
+                        </details>
                     </div>
                 </section>
             )}
@@ -527,6 +952,16 @@ export default function App() {
                                     >
                                         ↓
                                     </button>
+                                    <button
+                                        onClick={() => {
+                                            const next = [...schedules];
+                                            next.splice(idx, 1);
+                                            updateSchedules(next);
+                                            setSelectedSchedule(Math.max(0, idx - 1));
+                                        }}
+                                    >
+                                        删除
+                                    </button>
                                 </li>
                             ))}
                         </ul>
@@ -545,6 +980,19 @@ export default function App() {
                                         updateSchedules(next);
                                     }}
                                 />
+                                <label>Enabled</label>
+                                <label className="row gap-8">
+                                    <input
+                                        type="checkbox"
+                                        checked={currentSchedule.enabled}
+                                        onChange={(e) => {
+                                            const next = [...schedules];
+                                            next[selectedSchedule] = { ...currentSchedule, enabled: e.target.checked };
+                                            updateSchedules(next);
+                                        }}
+                                    />
+                                    {currentSchedule.enabled ? '已启用' : '已停用'}
+                                </label>
                                 <label>Type</label>
                                 <select
                                     value={currentSchedule.type}
@@ -601,7 +1049,9 @@ export default function App() {
                                 </div>
                                 <div className="timeline">
                                     {timeline.map((event, idx) => (
-                                        <div key={`${event.schedule_name}_${idx}`}>{event.trigger_at} | {event.schedule_name} | {event.source}</div>
+                                        <div key={`${event.schedule_name}_${idx}`}>
+                                            {event.trigger_at} | {event.schedule_name} | {event.source}
+                                        </div>
                                     ))}
                                 </div>
                             </>
@@ -627,6 +1077,35 @@ export default function App() {
                                         />
                                         {k}
                                     </label>
+                                );
+                            }
+                            if (k === 'auth_type') {
+                                return (
+                                    <div key={k}>
+                                        <label>{k}</label>
+                                        <select
+                                            value={String(v)}
+                                            onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.value })}
+                                        >
+                                            <option value="password">password</option>
+                                            <option value="key">key</option>
+                                        </select>
+                                    </div>
+                                );
+                            }
+                            if (k === 'restart_policy') {
+                                return (
+                                    <div key={k}>
+                                        <label>{k}</label>
+                                        <select
+                                            value={String(v)}
+                                            onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.value })}
+                                        >
+                                            <option value="docker-compose">docker-compose</option>
+                                            <option value="systemctl">systemctl</option>
+                                            <option value="pm2">pm2</option>
+                                        </select>
+                                    </div>
                                 );
                             }
                             return (

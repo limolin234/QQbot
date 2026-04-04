@@ -1,10 +1,14 @@
 export type TabKey = 'basic' | 'agent' | 'scheduler' | 'deploy' | 'history';
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+export type JsonObject = { [key: string]: JsonValue };
+
 export type StepNode = {
     id: string;
     kind: 'action' | 'group' | 'if';
     action?: string;
-    params?: Record<string, unknown>;
+    params?: JsonObject;
     name?: string;
     children?: StepNode[];
     condition?: {
@@ -23,19 +27,12 @@ export type ScheduleConfig = {
     expression?: string;
     seconds?: number;
     enabled: boolean;
-    steps?: Array<{ action: string; params: Record<string, unknown> }>;
+    steps?: Array<{ action: string; params: JsonObject }>;
     steps_tree?: StepNode[];
 };
 
 export type AgentConfigRoot = {
-    scheduler_manager?: {
-        file_name: string;
-        config: {
-            timezone?: string;
-            schedules?: ScheduleConfig[];
-        };
-    };
-    [key: string]: unknown;
+    [key: string]: JsonValue;
 };
 
 export type AllConfigResponse = {
