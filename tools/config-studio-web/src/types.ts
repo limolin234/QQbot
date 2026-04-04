@@ -6,19 +6,11 @@ export type JsonObject = { [key: string]: JsonValue };
 
 export type StepNode = {
     id: string;
-    kind: 'action' | 'group' | 'if';
+    kind: 'action' | 'group';
     action?: string;
     params?: JsonObject;
     name?: string;
     children?: StepNode[];
-    condition?: {
-        source?: string;
-        key?: string;
-        op?: string;
-        value?: string;
-    };
-    then_steps?: StepNode[];
-    else_steps?: StepNode[];
 };
 
 export type ScheduleConfig = {

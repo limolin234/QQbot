@@ -199,7 +199,7 @@ function getActionSchema(action: string): ActionSchema | undefined {
 function toStepNode(item: JsonValue): StepNode | null {
     const obj = asObject(item);
     const kind = toStringValue(obj.kind, 'action') as StepNode['kind'];
-    if (kind !== 'action' && kind !== 'group' && kind !== 'if') {
+    if (kind !== 'action' && kind !== 'group') {
         return null;
     }
 
@@ -221,17 +221,7 @@ function toStepNode(item: JsonValue): StepNode | null {
         return node;
     }
 
-    node.condition = {
-        source: toStringValue(asObject(obj.condition).source, 'env'),
-        key: toStringValue(asObject(obj.condition).key, ''),
-        op: toStringValue(asObject(obj.condition).op, 'eq'),
-        value: toStringValue(asObject(obj.condition).value, ''),
-    };
-    const thenSteps = Array.isArray(obj.then_steps) ? obj.then_steps : [];
-    const elseSteps = Array.isArray(obj.else_steps) ? obj.else_steps : [];
-    node.then_steps = thenSteps.map((child) => toStepNode(child)).filter((child): child is StepNode => Boolean(child));
-    node.else_steps = elseSteps.map((child) => toStepNode(child)).filter((child): child is StepNode => Boolean(child));
-    return node;
+    return null;
 }
 
 function normalizeSchedules(input: JsonValue | undefined): ScheduleConfig[] {
@@ -296,15 +286,6 @@ function defaultSchedule(): ScheduleConfig {
 function defaultStep(kind: StepNode['kind']): StepNode {
     if (kind === 'group') {
         return { id: makeNodeId(), kind: 'group', name: 'group', children: [] };
-    }
-    if (kind === 'if') {
-        return {
-            id: makeNodeId(),
-            kind: 'if',
-            condition: { source: 'env', key: '', op: 'eq', value: '' },
-            then_steps: [],
-            else_steps: [],
-        };
     }
     return {
         id: makeNodeId(),
@@ -1225,7 +1206,7 @@ function StepTreeEditor({
                 <div key={node.id || `${node.kind}_${idx}`} className="node">
                     <div className="row between gap-8 wrap">
                         <strong>
-                            {node.kind === 'action' ? 'Action' : node.kind === 'group' ? 'Group' : 'If'} #{idx + 1}
+                            {node.kind === 'action' ? 'Action' : 'Group'} #{idx + 1}
                         </strong>
                         <div className="row gap-8 wrap">
                             <button onClick={() => move(idx, -1)} disabled={idx === 0}>
@@ -1247,7 +1228,6 @@ function StepTreeEditor({
                             >
                                 <option value="action">action</option>
                                 <option value="group">group</option>
-                                <option value="if">if</option>
                             </select>
                         </div>
                     </div>
@@ -1303,93 +1283,12 @@ function StepTreeEditor({
                             </div>
                         </>
                     )}
-
-                    {node.kind === 'if' && (
-                        <>
-                            <div className="grid2 top-gap">
-                                <div>
-                                    <label>source</label>
-                                    <select
-                                        value={node.condition?.source || 'env'}
-                                        onChange={(e) =>
-                                            updateAt(idx, {
-                                                ...node,
-                                                condition: { ...(node.condition || {}), source: e.target.value },
-                                            })
-                                        }
-                                    >
-                                        <option value="env">env</option>
-                                        <option value="context">context</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>op</label>
-                                    <select
-                                        value={node.condition?.op || 'eq'}
-                                        onChange={(e) =>
-                                            updateAt(idx, {
-                                                ...node,
-                                                condition: { ...(node.condition || {}), op: e.target.value },
-                                            })
-                                        }
-                                    >
-                                        <option value="eq">eq</option>
-                                        <option value="ne">ne</option>
-                                        <option value="contains">contains</option>
-                                        <option value="in">in</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label>key</label>
-                                    <input
-                                        value={node.condition?.key || ''}
-                                        onChange={(e) =>
-                                            updateAt(idx, {
-                                                ...node,
-                                                condition: { ...(node.condition || {}), key: e.target.value },
-                                            })
-                                        }
-                                    />
-                                </div>
-                                <div>
-                                    <label>value</label>
-                                    <input
-                                        value={node.condition?.value || ''}
-                                        onChange={(e) =>
-                                            updateAt(idx, {
-                                                ...node,
-                                                condition: { ...(node.condition || {}), value: e.target.value },
-                                            })
-                                        }
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="top-gap">
-                                <label>then_steps</label>
-                                <StepTreeEditor
-                                    nodes={node.then_steps || []}
-                                    depth={depth + 1}
-                                    onChange={(then_steps) => updateAt(idx, { ...node, then_steps })}
-                                />
-                            </div>
-                            <div className="top-gap">
-                                <label>else_steps</label>
-                                <StepTreeEditor
-                                    nodes={node.else_steps || []}
-                                    depth={depth + 1}
-                                    onChange={(else_steps) => updateAt(idx, { ...node, else_steps })}
-                                />
-                            </div>
-                        </>
-                    )}
                 </div>
             ))}
 
             <div className="row gap-8 top-gap wrap">
                 <button onClick={() => onChange([...nodes, defaultStep('action')])}>+ Action</button>
                 <button onClick={() => onChange([...nodes, defaultStep('group')])}>+ Group</button>
-                <button onClick={() => onChange([...nodes, defaultStep('if')])}>+ If</button>
             </div>
         </div>
     );
@@ -1837,7 +1736,7 @@ export default function App() {
                                 <li>expression: cron 表达式，仅在 type=cron 时生效。</li>
                                 <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
                                 <li>enabled: 是否启用该 schedule。</li>
-                                <li>steps_tree: 调度步骤树，支持 action/group/if 三类节点。</li>
+                                <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
                             </ul>
 
                             <h4>2. 可用操作</h4>
@@ -1853,16 +1752,13 @@ export default function App() {
                             <h4>3. 节点类型与嵌套</h4>
                             <ul>
                                 <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
-                                <li>group: 逻辑分组节点，children 内可继续嵌套 action/group/if。</li>
-                                <li>if: 条件分支节点，按 condition 判断进入 then_steps 或 else_steps。</li>
+                                <li>group: 逻辑分组节点，children 内可继续嵌套 action/group。</li>
                             </ul>
 
-                            <h4>4. if/group/action 参数说明</h4>
+                            <h4>4. group/action 参数说明</h4>
                             <ul>
-                                <li>if.condition.source: 条件来源，当前支持 env 或 context。</li>
-                                <li>if.condition.key: 参与比较的键名，例如 ENABLE_DIDA_PUSH。</li>
-                                <li>if.condition.op: 比较操作符，可选 eq/ne/contains/in。</li>
-                                <li>if.condition.value: 比较值，通常写字符串。</li>
+                                <li>group.name: 分组名称，仅用于结构化组织步骤。</li>
+                                <li>group.children: 子步骤列表，按顺序执行。</li>
                                 <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
                                 <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
                             </ul>
@@ -1870,7 +1766,7 @@ export default function App() {
                             <h4>5. 推荐使用流程</h4>
                             <ol>
                                 <li>先创建 schedule 并设置 type、expression/seconds、enabled。</li>
-                                <li>在 steps_tree 里先搭结构（group/if），再填 action 参数。</li>
+                                <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
                                 <li>点击刷新时间线确认触发节奏。</li>
                                 <li>点击保存并编译 Scheduler 落盘生效。</li>
                             </ol>

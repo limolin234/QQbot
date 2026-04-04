@@ -3,7 +3,7 @@ import aiocron
 import logging
 import os
 import traceback
-from typing import Any, List
+from typing import List
 from zoneinfo import ZoneInfo
 from .config_models import SchedulerConfig, ScheduleConfig, StepTreeNode
 from .registry import action_registry
@@ -19,15 +19,9 @@ class SchedulerManager:
         self.config: SchedulerConfig | None = None
 
     def load_config(self) -> None:
-        # Define the virtual filename expected in agent_config.yaml
         virtual_filename = "scheduler_manager.py"
-
-        # Determine the path to agent_config.yaml
-        # Assuming manager.py is in workflows/scheduler/manager.py
-        # and agent_config.yaml is in workflows/agent_config.yaml
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.join(base_dir, "agent_config.yaml")
-
         raw_config = load_agent_config_by_filename(
             virtual_filename, config_path=config_path
         )
@@ -128,12 +122,7 @@ class SchedulerManager:
     async def _run_job(self, schedule: ScheduleConfig) -> None:
         logger.info(f"[Scheduler] Running job: {schedule.name}")
         if schedule.steps_tree:
-            context = {
-                "env": dict(os.environ),
-                "schedule_name": schedule.name,
-                "timezone": self.config.timezone if self.config else "",
-            }
-            await self._execute_steps_tree(schedule.steps_tree, context, schedule.name)
+            await self._execute_steps_tree(schedule.steps_tree, schedule.name)
             return
 
         for step in schedule.steps:
@@ -149,16 +138,14 @@ class SchedulerManager:
     async def _execute_steps_tree(
         self,
         steps_tree: list[StepTreeNode],
-        context: dict[str, Any],
         schedule_name: str,
     ) -> None:
         for node in steps_tree:
-            await self._execute_step_node(node, context, schedule_name)
+            await self._execute_step_node(node, schedule_name)
 
     async def _execute_step_node(
         self,
         node: StepTreeNode,
-        context: dict[str, Any],
         schedule_name: str,
     ) -> None:
         try:
@@ -168,17 +155,7 @@ class SchedulerManager:
 
             if node.kind == "group":
                 for child in node.children:
-                    await self._execute_step_node(child, context, schedule_name)
-                return
-
-            if node.kind == "if":
-                selected = (
-                    node.then_steps
-                    if self._eval_condition(node.condition, context)
-                    else node.else_steps
-                )
-                for child in selected:
-                    await self._execute_step_node(child, context, schedule_name)
+                    await self._execute_step_node(child, schedule_name)
                 return
 
             logger.warning(
@@ -201,33 +178,3 @@ class SchedulerManager:
         params = node.params if isinstance(node.params, dict) else {}
         action_func = action_registry.get(action)
         await action_func(**params)
-
-    def _eval_condition(
-        self, condition: dict[str, Any], context: dict[str, Any]
-    ) -> bool:
-        if not isinstance(condition, dict):
-            return False
-
-        source = str(condition.get("source", "context"))
-        key = str(condition.get("key", ""))
-        op = str(condition.get("op", "eq"))
-        expected = condition.get("value")
-
-        if source == "env":
-            actual = context.get("env", {}).get(key)
-        else:
-            actual = context.get(key)
-
-        if op == "eq":
-            return str(actual) == str(expected)
-        if op == "ne":
-            return str(actual) != str(expected)
-        if op == "contains":
-            return str(expected) in str(actual)
-        if op == "in":
-            return actual in expected if isinstance(expected, list) else False
-        if op == "truthy":
-            return bool(actual)
-        if op == "falsy":
-            return not bool(actual)
-        return False

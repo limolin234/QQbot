@@ -8,7 +8,7 @@ class StepConfig(BaseModel):
 
 
 class StepTreeNode(BaseModel):
-    kind: Literal["action", "group", "if"] = "action"
+    kind: Literal["action", "group"] = "action"
 
     # action node
     action: Optional[str] = None
@@ -17,11 +17,6 @@ class StepTreeNode(BaseModel):
     # group node
     name: Optional[str] = None
     children: List["StepTreeNode"] = Field(default_factory=list)
-
-    # if node
-    condition: Dict[str, Any] = Field(default_factory=dict)
-    then_steps: List["StepTreeNode"] = Field(default_factory=list)
-    else_steps: List["StepTreeNode"] = Field(default_factory=list)
 
 
 class ScheduleConfig(BaseModel):

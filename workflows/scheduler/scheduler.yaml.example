@@ -50,7 +50,7 @@ scheduler_manager:
             params:
               project_ids: []
 
-      - name: "morning_tree_with_condition"
+      - name: "morning_tree_linear"
         type: "cron"
         expression: "15 8 * * *"
         enabled: false
@@ -63,23 +63,10 @@ scheduler_manager:
                 params:
                   group_id: "1231231234"
                   message: "早间流程启动。"
-              - kind: "if"
-                condition:
-                  source: "env"
-                  key: "ENABLE_DIDA_PUSH"
-                  op: "eq"
-                  value: "true"
-                then_steps:
-                  - kind: "action"
-                    action: "dida.push_task_list"
-                    params:
-                      group_id: "1231231234"
-                      user_qq: "12345678"
-                      day_range: "today"
-                      limit: 10
-                else_steps:
-                  - kind: "action"
-                    action: "core.send_group_msg"
-                    params:
-                      group_id: "1231231234"
-                      message: "ENABLE_DIDA_PUSH=false，跳过任务推送。"
+              - kind: "action"
+                action: "dida.push_task_list"
+                params:
+                  group_id: "1231231234"
+                  user_qq: "12345678"
+                  day_range: "today"
+                  limit: 10

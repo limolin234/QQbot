@@ -14,7 +14,7 @@ Scheduler 配置位于：
 - expression: cron 表达式，仅 type=cron 时使用。
 - seconds: 间隔秒数，仅 type=interval 时使用。
 - enabled: 是否启用。
-- steps_tree: 步骤树，支持 action/group/if。
+- steps_tree: 步骤树，支持 action/group。
 
 ## 3. 页面可用操作
 - 新增 Schedule：创建新的 schedule。
@@ -59,46 +59,25 @@ Scheduler 配置位于：
 字段：
 - kind: 固定为 group
 - name: 分组名称
-- children: 子节点数组，可继续嵌套 action/group/if
+- children: 子节点数组，可继续嵌套 action/group
 
 用途：
 - 将一段动作打包成一个块，便于阅读和复用。
 
-### 4.3 if 节点
-用于条件分支。
-
-字段：
-- kind: 固定为 if
-- condition.source: 条件来源，当前支持 env 或 context
-- condition.key: 条件键名
-- condition.op: 比较操作符（eq/ne/contains/in）
-- condition.value: 比较值
-- then_steps: 条件成立时执行
-- else_steps: 条件不成立时执行
-
-示例：
-- source=env
-- key=ENABLE_DIDA_PUSH
-- op=eq
-- value=true
-
 ## 5. 嵌套方式
 支持任意层级嵌套，推荐结构：
 1. 顶层按业务拆为多个 schedule
-2. 每个 schedule 先用 group 做阶段分组
-3. 分组内部使用 if 处理可开关路径
-4. 叶子节点使用 action 执行具体动作
+2. 每个 schedule 用 group 做阶段分组
+3. 叶子节点使用 action 执行具体动作
 
 典型结构：
 - group(morning_bundle)
   - action(core.send_group_msg)
-  - if(env ENABLE_DIDA_PUSH == true)
-    - then: action(dida.push_task_list)
-    - else: action(core.send_group_msg)
+  - action(dida.push_task_list)
 
 ## 6. 使用建议
 - 先完成 schedule 基础信息，再编辑 steps_tree。
-- 先搭结构（group/if），后填 action 参数。
+- 先搭结构（group），后填 action 参数。
 - 每次改完先刷新时间线，最后再保存并编译。
 - 若 cron 无触发结果，优先检查 timezone 与 expression。
 
@@ -107,8 +86,5 @@ Scheduler 配置位于：
   - schedule.enabled 是否为 true
   - cron 表达式是否有效
   - interval seconds 是否大于 0
-- 条件分支不生效：
-  - key 是否存在于 env/context
-  - op 与 value 类型是否匹配
 - 参数输入复杂：
   - 可先用表单，复杂对象再切换到高级 JSON 模式
