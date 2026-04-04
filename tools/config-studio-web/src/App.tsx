@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
     compileSchedules,
+    deployPull,
     deployPush,
     getAllConfig,
     getTimeline,
@@ -1475,7 +1476,7 @@ export default function App() {
         project_dir: '/root/qqbot',
         push_env: true,
         push_agent_yaml: true,
-        restart_policy: 'docker-compose',
+        restart_policy: 'sudo-docker-restart',
     });
     const [deployLogs, setDeployLogs] = useState<string[]>([]);
     const [snapshots, setSnapshots] = useState<string[]>([]);
@@ -1653,6 +1654,24 @@ export default function App() {
         try {
             const result = await deployPush(deployForm);
             setDeployLogs(result.logs || [result.message]);
+        } catch (e) {
+            setError(String(e));
+        }
+    };
+
+    const runPullAndRefresh = async () => {
+        try {
+            const result = await deployPull({
+                ...deployForm,
+                pull_env: deployForm.push_env,
+                pull_agent_yaml: deployForm.push_agent_yaml,
+            });
+            const all = await getAllConfig();
+            setLlmApiKey(all.env?.LLM_API_KEY || '');
+            setLlmApiBaseUrl(all.env?.LLM_API_BASE_URL || '');
+            setAgent(all.agent || {});
+            setDeployLogs(result.logs || [result.message]);
+            setStatus('ready');
         } catch (e) {
             setError(String(e));
         }
@@ -2258,6 +2277,7 @@ export default function App() {
                         })}
                         <div className="row gap-8">
                             <button onClick={runConnectionTest}>测试连接</button>
+                            <button onClick={runPullAndRefresh}>拉取并刷新</button>
                             <button onClick={runDeploy}>推送并重启</button>
                         </div>
                     </div>

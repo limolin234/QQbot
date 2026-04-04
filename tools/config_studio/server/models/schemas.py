@@ -62,9 +62,14 @@ class DeployTarget(BaseModel):
 class DeployPushRequest(DeployTarget):
     push_env: bool = True
     push_agent_yaml: bool = True
-    restart_policy: Literal["docker-compose", "systemctl", "pm2", "none"] = (
-        "docker-compose"
-    )
+    restart_policy: Literal[
+        "docker-compose", "systemctl", "pm2", "none", "sudo-docker-restart"
+    ] = "docker-compose"
+
+
+class DeployPullRequest(DeployTarget):
+    pull_env: bool = True
+    pull_agent_yaml: bool = True
 
 
 class ConnectionResult(BaseModel):

@@ -13,6 +13,7 @@ from .models import (
     AllConfigResponse,
     CompileRequest,
     ConnectionResult,
+    DeployPullRequest,
     DeployPushRequest,
     DeployTarget,
     EnvPatchRequest,
@@ -190,4 +191,10 @@ async def test_connection(payload: DeployTarget) -> ConnectionResult:
 @app.post("/api/deploy/push", response_model=ConnectionResult)
 async def deploy_push(payload: DeployPushRequest) -> ConnectionResult:
     success, message, logs = deploy_service.push_and_restart(payload.model_dump())
+    return ConnectionResult(success=success, message=message, logs=logs)
+
+
+@app.post("/api/deploy/pull", response_model=ConnectionResult)
+async def deploy_pull(payload: DeployPullRequest) -> ConnectionResult:
+    success, message, logs = deploy_service.pull_and_refresh(payload.model_dump())
     return ConnectionResult(success=success, message=message, logs=logs)

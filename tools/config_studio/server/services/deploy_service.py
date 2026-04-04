@@ -95,6 +95,54 @@ class DeployService:
             if client:
                 client.close()
 
+    def pull_and_refresh(self, payload: dict[str, Any]) -> tuple[bool, str, list[str]]:
+        logs: list[str] = []
+        host = str(payload.get("host") or "")
+        port = int(payload.get("port") or 22)
+        username = str(payload.get("username") or "")
+        auth_type = str(payload.get("auth_type") or "password")
+        password = payload.get("password")
+        key_path = payload.get("key_path")
+        project_dir = str(payload.get("project_dir") or "/root/qqbot")
+        pull_env = bool(payload.get("pull_env", True))
+        pull_agent_yaml = bool(payload.get("pull_agent_yaml", True))
+
+        client = None
+        sftp = None
+        try:
+            client = self._connect(host, port, username, auth_type, password, key_path)
+            sftp = client.open_sftp()
+            logs.append("sftp opened")
+
+            pulled_count = 0
+
+            if pull_env:
+                remote_env = f"{project_dir}/.env"
+                local_env = self.repo_root / ".env"
+                self._download_atomic(sftp, remote_env, local_env)
+                logs.append(f"downloaded {remote_env} -> {local_env}")
+                pulled_count += 1
+
+            if pull_agent_yaml:
+                remote_yaml = f"{project_dir}/workflows/agent_config.yaml"
+                local_yaml = self.repo_root / "workflows" / "agent_config.yaml"
+                self._download_atomic(sftp, remote_yaml, local_yaml)
+                logs.append(f"downloaded {remote_yaml} -> {local_yaml}")
+                pulled_count += 1
+
+            if pulled_count == 0:
+                return False, "nothing selected to pull", logs
+
+            return True, "pull success", logs
+        except Exception as exc:
+            logs.append(f"pull error: {exc}")
+            return False, str(exc), logs
+        finally:
+            if sftp:
+                sftp.close()
+            if client:
+                client.close()
+
     def _connect(
         self,
         host: str,
@@ -153,6 +201,17 @@ class DeployService:
             except IOError:
                 sftp.mkdir(current)
 
+    def _download_atomic(
+        self, sftp: paramiko.SFTPClient, remote_file: str, local_file: Path
+    ) -> None:
+        local_file.parent.mkdir(parents=True, exist_ok=True)
+        local_tmp = local_file.with_suffix(local_file.suffix + ".tmp")
+        try:
+            sftp.get(remote_file, str(local_tmp))
+        except IOError as exc:
+            raise FileNotFoundError(f"remote file not found: {remote_file}") from exc
+        local_tmp.replace(local_file)
+
     def _build_restart_command(self, project_dir: str, restart_policy: str) -> str:
         if restart_policy == "none":
             return ""
@@ -160,4 +219,6 @@ class DeployService:
             return "systemctl restart qqbot"
         if restart_policy == "pm2":
             return "pm2 restart qqbot"
+        if restart_policy == "sudo-docker-restart":
+            return "sudo -i bash -lc 'docker restart qqbot'"
         return f"cd {project_dir} && docker compose up -d qqbot || docker compose restart qqbot"

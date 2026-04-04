@@ -85,6 +85,13 @@ export function deployPush(payload: Record<string, unknown>) {
     });
 }
 
+export function deployPull(payload: Record<string, unknown>) {
+    return request<{ success: boolean; message: string; logs: string[] }>('/api/deploy/pull', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+}
+
 export function listSnapshots() {
     return request<{ snapshots: string[] }>('/api/history');
 }
