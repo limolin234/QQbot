@@ -28,5 +28,10 @@ logs/message_handler.log
 workflows/agent_config.yaml
 TODO.md
 
+node_modules
+tools/config-studio-web/dist/
+tools/config-studio-web/tsconfig.tsbuildinfo
+tools/config_studio/server/__pycache__/
+.config_studio_snapshots/
 
 qqbot.tar.gz

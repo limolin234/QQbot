@@ -3,13 +3,14 @@ import aiocron
 import logging
 import os
 import traceback
-from typing import List
+from typing import Any, List
 from zoneinfo import ZoneInfo
-from .config_models import SchedulerConfig, ScheduleConfig
+from .config_models import SchedulerConfig, ScheduleConfig, StepTreeNode
 from .registry import action_registry
 from ..agent_config_loader import load_agent_config_by_filename
 
 logger = logging.getLogger(__name__)
+
 
 class SchedulerManager:
     def __init__(self):
@@ -20,22 +21,28 @@ class SchedulerManager:
     def load_config(self) -> None:
         # Define the virtual filename expected in agent_config.yaml
         virtual_filename = "scheduler_manager.py"
-        
+
         # Determine the path to agent_config.yaml
         # Assuming manager.py is in workflows/scheduler/manager.py
         # and agent_config.yaml is in workflows/agent_config.yaml
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.join(base_dir, "agent_config.yaml")
-        
-        raw_config = load_agent_config_by_filename(virtual_filename, config_path=config_path)
+
+        raw_config = load_agent_config_by_filename(
+            virtual_filename, config_path=config_path
+        )
 
         if not raw_config:
-            logger.warning(f"[Scheduler] No configuration found for '{virtual_filename}' in {config_path}. Skipping initialization.")
+            logger.warning(
+                f"[Scheduler] No configuration found for '{virtual_filename}' in {config_path}. Skipping initialization."
+            )
             return
 
         try:
             self.config = SchedulerConfig(**raw_config)
-            logger.info(f"[Scheduler] Configuration loaded. Found {len(self.config.schedules)} schedules.")
+            logger.info(
+                f"[Scheduler] Configuration loaded. Found {len(self.config.schedules)} schedules."
+            )
         except Exception as e:
             logger.error(f"[Scheduler] Configuration validation failed: {e}")
             self.config = None
@@ -51,12 +58,16 @@ class SchedulerManager:
 
             if schedule.type == "cron":
                 if not schedule.expression:
-                    logger.error(f"[Scheduler] Error: Cron schedule '{schedule.name}' missing expression.")
+                    logger.error(
+                        f"[Scheduler] Error: Cron schedule '{schedule.name}' missing expression."
+                    )
                     continue
                 self._schedule_cron(schedule)
             elif schedule.type == "interval":
                 if not schedule.seconds:
-                    logger.error(f"[Scheduler] Error: Interval schedule '{schedule.name}' missing seconds.")
+                    logger.error(
+                        f"[Scheduler] Error: Interval schedule '{schedule.name}' missing seconds."
+                    )
                     continue
                 self._schedule_interval(schedule)
 
@@ -67,23 +78,31 @@ class SchedulerManager:
                 try:
                     tz = ZoneInfo(self.config.timezone)
                 except Exception:
-                    logger.warning(f"[Scheduler] Invalid timezone '{self.config.timezone}', falling back to system time.")
+                    logger.warning(
+                        f"[Scheduler] Invalid timezone '{self.config.timezone}', falling back to system time."
+                    )
 
             cron = aiocron.crontab(
                 schedule.expression,
                 func=self._make_job_func(schedule),
                 start=True,
-                tz=tz
+                tz=tz,
             )
             self.cron_jobs.append(cron)
-            logger.info(f"[Scheduler] Scheduled cron job: {schedule.name} ({schedule.expression}) tz={self.config.timezone}")
+            logger.info(
+                f"[Scheduler] Scheduled cron job: {schedule.name} ({schedule.expression}) tz={self.config.timezone}"
+            )
         except Exception as e:
-            logger.error(f"[Scheduler] Failed to schedule cron job '{schedule.name}': {e}")
+            logger.error(
+                f"[Scheduler] Failed to schedule cron job '{schedule.name}': {e}"
+            )
 
     def _schedule_interval(self, schedule: ScheduleConfig) -> None:
         task = asyncio.create_task(self._interval_loop(schedule))
         self.interval_tasks.append(task)
-        logger.info(f"[Scheduler] Scheduled interval job: {schedule.name} (every {schedule.seconds}s)")
+        logger.info(
+            f"[Scheduler] Scheduled interval job: {schedule.name} (every {schedule.seconds}s)"
+        )
 
     async def _interval_loop(self, schedule: ScheduleConfig) -> None:
         while True:
@@ -93,7 +112,9 @@ class SchedulerManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"[Scheduler] Error in interval loop for '{schedule.name}': {e}")
+                logger.error(
+                    f"[Scheduler] Error in interval loop for '{schedule.name}': {e}"
+                )
                 logger.debug(traceback.format_exc())
                 # Wait a bit before retrying to avoid tight loops on error
                 await asyncio.sleep(5)
@@ -101,14 +122,112 @@ class SchedulerManager:
     def _make_job_func(self, schedule: ScheduleConfig):
         async def job_wrapper():
             await self._run_job(schedule)
+
         return job_wrapper
 
     async def _run_job(self, schedule: ScheduleConfig) -> None:
         logger.info(f"[Scheduler] Running job: {schedule.name}")
+        if schedule.steps_tree:
+            context = {
+                "env": dict(os.environ),
+                "schedule_name": schedule.name,
+                "timezone": self.config.timezone if self.config else "",
+            }
+            await self._execute_steps_tree(schedule.steps_tree, context, schedule.name)
+            return
+
         for step in schedule.steps:
             try:
                 action_func = action_registry.get(step.action)
                 await action_func(**step.params)
             except Exception as e:
-                logger.error(f"[Scheduler] Job '{schedule.name}' step '{step.action}' failed: {e}")
+                logger.error(
+                    f"[Scheduler] Job '{schedule.name}' step '{step.action}' failed: {e}"
+                )
                 logger.debug(traceback.format_exc())
+
+    async def _execute_steps_tree(
+        self,
+        steps_tree: list[StepTreeNode],
+        context: dict[str, Any],
+        schedule_name: str,
+    ) -> None:
+        for node in steps_tree:
+            await self._execute_step_node(node, context, schedule_name)
+
+    async def _execute_step_node(
+        self,
+        node: StepTreeNode,
+        context: dict[str, Any],
+        schedule_name: str,
+    ) -> None:
+        try:
+            if node.kind == "action":
+                await self._execute_action_node(node, schedule_name)
+                return
+
+            if node.kind == "group":
+                for child in node.children:
+                    await self._execute_step_node(child, context, schedule_name)
+                return
+
+            if node.kind == "if":
+                selected = (
+                    node.then_steps
+                    if self._eval_condition(node.condition, context)
+                    else node.else_steps
+                )
+                for child in selected:
+                    await self._execute_step_node(child, context, schedule_name)
+                return
+
+            logger.warning(
+                f"[Scheduler] Unsupported step kind '{node.kind}' in schedule '{schedule_name}'"
+            )
+        except Exception as e:
+            logger.error(
+                f"[Scheduler] Schedule '{schedule_name}' step-tree node failed: {e}"
+            )
+            logger.debug(traceback.format_exc())
+
+    async def _execute_action_node(
+        self, node: StepTreeNode, schedule_name: str
+    ) -> None:
+        action = (node.action or "").strip()
+        if not action:
+            logger.warning(f"[Scheduler] Empty action in schedule '{schedule_name}'")
+            return
+
+        params = node.params if isinstance(node.params, dict) else {}
+        action_func = action_registry.get(action)
+        await action_func(**params)
+
+    def _eval_condition(
+        self, condition: dict[str, Any], context: dict[str, Any]
+    ) -> bool:
+        if not isinstance(condition, dict):
+            return False
+
+        source = str(condition.get("source", "context"))
+        key = str(condition.get("key", ""))
+        op = str(condition.get("op", "eq"))
+        expected = condition.get("value")
+
+        if source == "env":
+            actual = context.get("env", {}).get(key)
+        else:
+            actual = context.get(key)
+
+        if op == "eq":
+            return str(actual) == str(expected)
+        if op == "ne":
+            return str(actual) != str(expected)
+        if op == "contains":
+            return str(expected) in str(actual)
+        if op == "in":
+            return actual in expected if isinstance(expected, list) else False
+        if op == "truthy":
+            return bool(actual)
+        if op == "falsy":
+            return not bool(actual)
+        return False
