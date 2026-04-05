@@ -85,6 +85,15 @@ body {
     padding: 8px 10px;
 }
 
+.warning {
+    margin-top: 10px;
+    color: #5d4a00;
+    background: #fff4ce;
+    border: 1px solid #ffd56a;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
 .hint {
     margin-top: 6px;
     font-size: 12px;
@@ -417,6 +426,7 @@ pre {
         grid-template-columns: 1fr;
     }
 }
+
 /* ====== NEW LAYOUT STYLES ====== */
 
 .layout {
@@ -523,13 +533,13 @@ pre {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
     transition: transform 0.2s, box-shadow 0.2s;
 }
 
 .rule-card:hover {
     transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .rule-card h4 {
@@ -693,4 +703,3 @@ pre {
     font-size: 14px;
     font-weight: 500;
 }
-

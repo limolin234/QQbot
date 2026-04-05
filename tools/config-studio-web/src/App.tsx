@@ -92,11 +92,17 @@ type AutoReplyConfig = {
 };
 
 type DidaConfig = {
+    client_id: string;
+    client_secret: string;
+    redirect_uri: string;
     model: string;
     decision_model?: string;
     temperature: number;
     bot_qq: string;
     admin_qqs: string[];
+    due_window_seconds: number;
+    max_tasks_scan_per_user: number;
+    project_ids: string[];
     context_history_limit: number;
     context_max_chars: number;
     context_window_seconds: number;
@@ -106,16 +112,6 @@ type DidaConfig = {
     bypass_cooldown_when_at_bot: boolean;
     pending_max_messages: number;
     rules: DidaRule[];
-};
-
-type DidaSchedulerConfig = {
-    client_id: string;
-    client_secret: string;
-    redirect_uri: string;
-    poll_interval_seconds: number;
-    due_window_seconds: number;
-    max_tasks_scan_per_user: number;
-    project_ids: string[];
 };
 
 type SchedulerManagerConfig = {
@@ -204,7 +200,7 @@ const ACTION_SCHEMAS: ActionSchema[] = [
     {
         action: 'dida.poll',
         label: '轮询任务',
-        fields: [stringArrayField('project_ids', '项目 ID 列表')],
+        fields: [],
     },
     {
         action: 'dida.push_task_list',
@@ -276,6 +272,25 @@ function toStringValue(value: JsonValue | undefined, fallback = ''): string {
     if (typeof value === 'string') return value;
     if (value === undefined || value === null) return fallback;
     return String(value);
+}
+
+function buildDidaAgentPersistedConfig(source: JsonObject): JsonObject {
+    return {
+        model: toStringValue(source.model),
+        decision_model: toStringValue(source.decision_model),
+        temperature: toNumber(source.temperature, 0.1),
+        bot_qq: toStringValue(source.bot_qq),
+        admin_qqs: toStringArray(source.admin_qqs),
+        context_history_limit: toNumber(source.context_history_limit, 50),
+        context_max_chars: toNumber(source.context_max_chars, 2000),
+        context_window_seconds: toNumber(source.context_window_seconds, 0),
+        min_reply_interval_seconds: toNumber(source.min_reply_interval_seconds, 10),
+        flush_check_interval_seconds: toNumber(source.flush_check_interval_seconds, 10),
+        pending_expire_seconds: toNumber(source.pending_expire_seconds, 3600),
+        bypass_cooldown_when_at_bot: toBool(source.bypass_cooldown_when_at_bot, true),
+        pending_max_messages: toNumber(source.pending_max_messages, 50),
+        rules: Array.isArray(source.rules) ? source.rules : [makeDefaultDidaRule() as unknown as JsonValue],
+    };
 }
 
 function makeNodeId(): string {
@@ -386,6 +401,22 @@ function getSchedulerManagerConfig(agent: AgentConfigRoot): SchedulerManagerConf
         timezone: toStringValue(config.timezone, 'Asia/Shanghai'),
         schedules: normalizeSchedules(config.schedules),
     };
+}
+
+function isSchedulerManagerEnabled(agent: AgentConfigRoot): boolean {
+    const section = asObject(agent.scheduler_manager);
+    const config = asObject(section.config);
+    return Object.keys(config).length > 0;
+}
+
+function hasActionInStepNodes(nodes: StepNode[] | undefined, actionName: string): boolean {
+    if (!nodes || nodes.length === 0) return false;
+    return nodes.some((node) => {
+        if (node.kind === 'action') {
+            return (node.action || '').trim() === actionName;
+        }
+        return hasActionInStepNodes(node.children || [], actionName);
+    });
 }
 
 function defaultSchedule(): ScheduleConfig {
@@ -517,10 +548,6 @@ function defaultSections(): Record<FixedAgentKey, FixedSection> {
                 client_id: '',
                 client_secret: '',
                 redirect_uri: '',
-                poll_interval_seconds: 600,
-                due_window_seconds: 60,
-                max_tasks_scan_per_user: 200,
-                project_ids: [],
             },
         },
     };
@@ -1297,13 +1324,17 @@ function AutoReplyForm({ value, onChange }: { value: AutoReplyConfig; onChange: 
 
 function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: DidaConfig) => void }) {
     const [openBasicModal, setOpenBasicModal] = useState(false);
+    const [openGlobalModal, setOpenGlobalModal] = useState(false);
 
     return (
         <div>
             <div className="summary-card">
                 <div className="row between wrap gap-8">
                     <strong>基础参数</strong>
-                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                    <div className="row gap-8">
+                        <button onClick={() => setOpenGlobalModal(true)}>编辑 Dida 全局设置</button>
+                        <button onClick={() => setOpenBasicModal(true)}>编辑 Agent 参数</button>
+                    </div>
                 </div>
                 <div className="rule-preview">
                     模型：{value.model || '未设置'} | 决策模型：{value.decision_model || '未设置'} | 温度：{value.temperature}
@@ -1311,9 +1342,72 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
                 <div className="rule-preview">
                     机器人QQ：{value.bot_qq || '未设置'} | 管理员数：{value.admin_qqs.length} | 冷却：{value.min_reply_interval_seconds} 秒
                 </div>
+                <div className="rule-preview">
+                    OAuth：client_id {value.client_id ? '已配置' : '未配置'} | client_secret {value.client_secret ? '已配置' : '未配置'}
+                </div>
+                <div className="rule-preview">
+                    due_window：{value.due_window_seconds}s | max_scan：{value.max_tasks_scan_per_user} | project_ids：{value.project_ids.length}
+                </div>
+                <div className="muted top-gap">
+                    说明：轮询触发频率由 Scheduler 的 dida.poll 任务控制；这里维护 Dida 拉取的全局运行参数。
+                </div>
             </div>
 
-            <FormModal open={openBasicModal} title="滴答 Agent 基础参数" onClose={() => setOpenBasicModal(false)}>
+            <FormModal open={openGlobalModal} title="Dida 全局设置" onClose={() => setOpenGlobalModal(false)}>
+                <>
+                    <div className="grid2">
+                        <div>
+                            <label>client_id</label>
+                            <input
+                                value={value.client_id}
+                                onChange={(e) => onChange({ ...value, client_id: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label>client_secret</label>
+                            <input
+                                value={value.client_secret}
+                                onChange={(e) => onChange({ ...value, client_secret: e.target.value })}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>redirect_uri</label>
+                            <input
+                                value={value.redirect_uri}
+                                onChange={(e) => onChange({ ...value, redirect_uri: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label>due_window_seconds</label>
+                            <input
+                                type="number"
+                                value={value.due_window_seconds}
+                                onChange={(e) => onChange({ ...value, due_window_seconds: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div>
+                            <label>max_tasks_scan_per_user</label>
+                            <input
+                                type="number"
+                                value={value.max_tasks_scan_per_user}
+                                onChange={(e) => onChange({ ...value, max_tasks_scan_per_user: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>project_ids</label>
+                            <StringListEditor
+                                values={value.project_ids}
+                                onChange={(project_ids) => onChange({ ...value, project_ids })}
+                            />
+                        </div>
+                    </div>
+                    <div className="muted top-gap">
+                        说明：为兼容当前底层，此处保存时会同步回写到 dida_config。轮询触发频率请在 Scheduler 页面配置 dida.poll 的时间表达式。
+                    </div>
+                </>
+            </FormModal>
+
+            <FormModal open={openBasicModal} title="滴答 Agent 参数" onClose={() => setOpenBasicModal(false)}>
                 <div className="grid2">
                     <div>
                         <label>回复模型</label>
@@ -1415,86 +1509,23 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
     );
 }
 
-function DidaSchedulerForm({
-    value,
-    onChange,
-}: {
-    value: DidaSchedulerConfig;
-    onChange: (next: DidaSchedulerConfig) => void;
-}) {
-    const [openBasicModal, setOpenBasicModal] = useState(false);
-
+function DidaSchedulerForm({ value }: { value: DidaConfig }) {
     return (
         <div>
             <div className="summary-card">
                 <div className="row between wrap gap-8">
-                    <strong>基础参数</strong>
-                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                    <strong>滴答轮询配置（只读）</strong>
                 </div>
                 <div className="rule-preview">
-                    poll_interval: {value.poll_interval_seconds}s | due_window: {value.due_window_seconds}s | max_scan: {value.max_tasks_scan_per_user}
+                    client_id：{value.client_id ? '已配置' : '未配置'} | client_secret：{value.client_secret ? '已配置' : '未配置'}
                 </div>
                 <div className="rule-preview">
-                    project_ids 数量：{value.project_ids.length}（为空表示自动发现所有项目）
+                    redirect_uri：{value.redirect_uri || '未配置'}
                 </div>
                 <div className="muted top-gap">
-                    说明：admin_qqs 与 dida_agent_config 重叠，统一以 dida_agent_config 为准，这里不再配置。
+                    说明：本页仅展示当前配置，所有 Dida 参数（OAuth 与运行参数）统一在「滴答 Agent {'>'} Dida 全局设置」编辑，避免多入口冲突。
                 </div>
             </div>
-
-            <FormModal open={openBasicModal} title="滴答轮询配置" onClose={() => setOpenBasicModal(false)}>
-                <div className="grid2">
-                    <div>
-                        <label>client_id</label>
-                        <input value={value.client_id} onChange={(e) => onChange({ ...value, client_id: e.target.value })} />
-                    </div>
-                    <div>
-                        <label>client_secret</label>
-                        <input
-                            value={value.client_secret}
-                            onChange={(e) => onChange({ ...value, client_secret: e.target.value })}
-                        />
-                    </div>
-                    <div className="full-row">
-                        <label>redirect_uri</label>
-                        <input
-                            value={value.redirect_uri}
-                            onChange={(e) => onChange({ ...value, redirect_uri: e.target.value })}
-                        />
-                    </div>
-                    <div>
-                        <label>poll_interval_seconds</label>
-                        <input
-                            type="number"
-                            value={value.poll_interval_seconds}
-                            onChange={(e) => onChange({ ...value, poll_interval_seconds: Number(e.target.value) })}
-                        />
-                    </div>
-                    <div>
-                        <label>due_window_seconds</label>
-                        <input
-                            type="number"
-                            value={value.due_window_seconds}
-                            onChange={(e) => onChange({ ...value, due_window_seconds: Number(e.target.value) })}
-                        />
-                    </div>
-                    <div>
-                        <label>max_tasks_scan_per_user</label>
-                        <input
-                            type="number"
-                            value={value.max_tasks_scan_per_user}
-                            onChange={(e) => onChange({ ...value, max_tasks_scan_per_user: Number(e.target.value) })}
-                        />
-                    </div>
-                    <div className="full-row">
-                        <label>project_ids</label>
-                        <StringListEditor
-                            values={value.project_ids}
-                            onChange={(project_ids) => onChange({ ...value, project_ids })}
-                        />
-                    </div>
-                </div>
-            </FormModal>
         </div>
     );
 }
@@ -1839,6 +1870,15 @@ export default function App() {
 
     const fixedSections = useMemo(() => normalizeFixedSections(agent), [agent]);
     const schedulerConfig = useMemo(() => getSchedulerManagerConfig(agent), [agent]);
+    const schedulerManagerEnabled = useMemo(() => isSchedulerManagerEnabled(agent), [agent]);
+    const hasEnabledSummaryDailyReport = useMemo(
+        () =>
+            schedulerConfig.schedules.some(
+                (item) => item.enabled && hasActionInStepNodes(item.steps_tree, 'summary.daily_report'),
+            ),
+        [schedulerConfig.schedules],
+    );
+    const showSummaryMissingWarning = schedulerManagerEnabled && !hasEnabledSummaryDailyReport;
 
     useEffect(() => {
         (async () => {
@@ -1881,6 +1921,28 @@ export default function App() {
         next[key] = {
             file_name: fixedSections[key].file_name,
             config: cfg,
+        };
+        setAgent(next);
+    };
+
+    const updateDidaAgentConfig = (cfg: DidaConfig) => {
+        const next = cloneAgent(agent);
+        next.dida_agent_config = {
+            file_name: fixedSections.dida_agent_config.file_name,
+            config: buildDidaAgentPersistedConfig(cfg as unknown as JsonObject),
+        };
+        const didaConfigCurrent = asObject(fixedSections.dida_config.config);
+        next.dida_config = {
+            file_name: fixedSections.dida_config.file_name,
+            config: {
+                ...didaConfigCurrent,
+                client_id: cfg.client_id,
+                client_secret: cfg.client_secret,
+                redirect_uri: cfg.redirect_uri,
+                due_window_seconds: cfg.due_window_seconds,
+                max_tasks_scan_per_user: cfg.max_tasks_scan_per_user,
+                project_ids: cfg.project_ids,
+            },
         };
         setAgent(next);
     };
@@ -1984,6 +2046,28 @@ export default function App() {
                     config: fixedSections[fixedKey].config,
                 };
             }
+            const didaAgentCfg = asObject(asObject(payload.dida_agent_config).config);
+            const didaCfg = asObject(asObject(payload.dida_config).config);
+            payload.dida_agent_config = {
+                file_name: toStringValue(asObject(payload.dida_agent_config).file_name, fixedSections.dida_agent_config.file_name),
+                config: buildDidaAgentPersistedConfig(didaAgentCfg),
+            };
+            payload.dida_config = {
+                file_name: toStringValue(asObject(payload.dida_config).file_name, fixedSections.dida_config.file_name),
+                config: {
+                    ...didaCfg,
+                    client_id: toStringValue(didaCfg.client_id, toStringValue(didaAgentCfg.client_id, '')),
+                    client_secret: toStringValue(didaCfg.client_secret, toStringValue(didaAgentCfg.client_secret, '')),
+                    redirect_uri: toStringValue(didaCfg.redirect_uri, toStringValue(didaAgentCfg.redirect_uri, '')),
+                    due_window_seconds: toNumber(didaCfg.due_window_seconds, toNumber(didaAgentCfg.due_window_seconds, 60)),
+                    max_tasks_scan_per_user: toNumber(didaCfg.max_tasks_scan_per_user, toNumber(didaAgentCfg.max_tasks_scan_per_user, 200)),
+                    project_ids: (() => {
+                        const fromConfig = toStringArray(didaCfg.project_ids);
+                        if (fromConfig.length > 0) return fromConfig;
+                        return toStringArray(didaAgentCfg.project_ids);
+                    })(),
+                },
+            };
             delete payload.dida_scheduler_config;
             await saveAgent(payload as Record<string, unknown>);
             setStatus('saved');
@@ -2151,11 +2235,36 @@ export default function App() {
     });
 
     const didaConfig: DidaConfig = {
+        client_id: toStringValue(
+            fixedSections.dida_config.config.client_id,
+            toStringValue(fixedSections.dida_agent_config.config.client_id),
+        ),
+        client_secret: toStringValue(
+            fixedSections.dida_config.config.client_secret,
+            toStringValue(fixedSections.dida_agent_config.config.client_secret),
+        ),
+        redirect_uri: toStringValue(
+            fixedSections.dida_config.config.redirect_uri,
+            toStringValue(fixedSections.dida_agent_config.config.redirect_uri),
+        ),
         model: toStringValue(fixedSections.dida_agent_config.config.model),
         decision_model: toStringValue(fixedSections.dida_agent_config.config.decision_model),
         temperature: toNumber(fixedSections.dida_agent_config.config.temperature, 0.1),
         bot_qq: toStringValue(fixedSections.dida_agent_config.config.bot_qq),
         admin_qqs: toStringArray(fixedSections.dida_agent_config.config.admin_qqs),
+        due_window_seconds: toNumber(
+            fixedSections.dida_config.config.due_window_seconds,
+            toNumber(fixedSections.dida_agent_config.config.due_window_seconds, 60),
+        ),
+        max_tasks_scan_per_user: toNumber(
+            fixedSections.dida_config.config.max_tasks_scan_per_user,
+            toNumber(fixedSections.dida_agent_config.config.max_tasks_scan_per_user, 200),
+        ),
+        project_ids: (() => {
+            const fromConfig = toStringArray(fixedSections.dida_config.config.project_ids);
+            if (fromConfig.length > 0) return fromConfig;
+            return toStringArray(fixedSections.dida_agent_config.config.project_ids);
+        })(),
         context_history_limit: toNumber(fixedSections.dida_agent_config.config.context_history_limit, 50),
         context_max_chars: toNumber(fixedSections.dida_agent_config.config.context_max_chars, 2000),
         context_window_seconds: toNumber(fixedSections.dida_agent_config.config.context_window_seconds, 0),
@@ -2176,15 +2285,18 @@ export default function App() {
         rules: didaRules.length > 0 ? didaRules : [makeDefaultDidaRule()],
     };
 
-    const didaSchedulerConfig: DidaSchedulerConfig = {
-        client_id: toStringValue(fixedSections.dida_config.config.client_id),
-        client_secret: toStringValue(fixedSections.dida_config.config.client_secret),
-        redirect_uri: toStringValue(fixedSections.dida_config.config.redirect_uri),
-        poll_interval_seconds: toNumber(fixedSections.dida_config.config.poll_interval_seconds, 600),
-        due_window_seconds: toNumber(fixedSections.dida_config.config.due_window_seconds, 60),
-        max_tasks_scan_per_user: toNumber(fixedSections.dida_config.config.max_tasks_scan_per_user, 200),
-        project_ids: toStringArray(fixedSections.dida_config.config.project_ids),
-    };
+    const didaConfigured =
+        didaConfig.client_id.trim().length > 0 &&
+        didaConfig.client_secret.trim().length > 0 &&
+        didaConfig.redirect_uri.trim().length > 0;
+    const hasEnabledDidaPoll = useMemo(
+        () =>
+            schedulerConfig.schedules.some(
+                (item) => item.enabled && hasActionInStepNodes(item.steps_tree, 'dida.poll'),
+            ),
+        [schedulerConfig.schedules],
+    );
+    const showDidaPollMissingWarning = schedulerManagerEnabled && didaConfigured && !hasEnabledDidaPoll;
 
     const selectedSchedule = schedulerConfig.schedules[selectedScheduleIndex];
 
@@ -2273,15 +2385,12 @@ export default function App() {
                         {selectedAgent === 'dida_agent_config' && (
                             <DidaForm
                                 value={didaConfig}
-                                onChange={(next) => updateFixedSectionConfig('dida_agent_config', next as unknown as JsonObject)}
+                                onChange={(next) => updateDidaAgentConfig(next)}
                             />
                         )}
 
                         {selectedAgent === 'dida_config' && (
-                            <DidaSchedulerForm
-                                value={didaSchedulerConfig}
-                                onChange={(next) => updateFixedSectionConfig('dida_config', next as unknown as JsonObject)}
-                            />
+                            <DidaSchedulerForm value={didaConfig} />
                         )}
                     </section>
                 )}
@@ -2289,6 +2398,16 @@ export default function App() {
                 {tab === 'scheduler' && (
                     <section className="panel">
                         <h2>Scheduler 设置</h2>
+                        {showSummaryMissingWarning && (
+                            <div className="warning top-gap">
+                                已开启 scheduler_manager，但未发现启用的 summary.daily_report 任务；日报不会自动执行。
+                            </div>
+                        )}
+                        {showDidaPollMissingWarning && (
+                            <div className="warning top-gap">
+                                已配置 Dida 清单并开启 scheduler_manager，但未发现启用的 dida.poll 任务；Dida 清单不会自动拉取。
+                            </div>
+                        )}
                         <details className="scheduler-help top-gap" open>
                             <summary>Scheduler 功能使用说明</summary>
                             <div className="scheduler-help-content">
