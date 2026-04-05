@@ -121,7 +121,11 @@ type ActionFieldSchema = {
     key: string;
     label: string;
     type: ActionFieldType;
+    options?: ActionFieldOption[];
+    defaultValue?: JsonValue;
 };
+
+type ActionFieldOption = { value: string; label: string };
 
 type ActionSchema = {
     action: string;
@@ -129,33 +133,71 @@ type ActionSchema = {
     fields: ActionFieldSchema[];
 };
 
+// Centralized enum options for action params. Future enum params should reuse these.
+const ACTION_PARAM_ENUMS = {
+    summaryRunMode: [
+        { value: 'auto', label: 'auto（当天汇总）' },
+        { value: 'manual', label: 'manual（增量汇总）' },
+    ] as ActionFieldOption[],
+    didaDayRange: [
+        { value: 'today', label: 'today（今天+已过期）' },
+        { value: 'overdue', label: 'overdue（仅已过期）' },
+        { value: 'tomorrow', label: 'tomorrow（明天）' },
+        { value: 'all', label: 'all（全部）' },
+    ] as ActionFieldOption[],
+};
+
+function stringField(key: string, label: string, defaultValue = ''): ActionFieldSchema {
+    return { key, label, type: 'string', defaultValue };
+}
+
+function numberField(key: string, label: string, defaultValue = 0): ActionFieldSchema {
+    return { key, label, type: 'number', defaultValue };
+}
+
+function stringArrayField(key: string, label: string, defaultValue: string[] = []): ActionFieldSchema {
+    return { key, label, type: 'string[]', defaultValue };
+}
+
+function enumField(
+    key: string,
+    label: string,
+    options: ActionFieldOption[],
+    defaultValue: string,
+): ActionFieldSchema {
+    return {
+        key,
+        label,
+        type: 'string',
+        options,
+        defaultValue,
+    };
+}
+
 const ACTION_SCHEMAS: ActionSchema[] = [
     {
         action: 'core.send_group_msg',
         label: '发送群消息',
-        fields: [
-            { key: 'group_id', label: '群号', type: 'string' },
-            { key: 'message', label: '消息内容', type: 'string' },
-        ],
+        fields: [stringField('group_id', '群号'), stringField('message', '消息内容')],
     },
     {
         action: 'summary.daily_report',
         label: '每日总结',
-        fields: [{ key: 'run_mode', label: '运行模式', type: 'string' }],
+        fields: [enumField('run_mode', '运行模式', ACTION_PARAM_ENUMS.summaryRunMode, 'auto')],
     },
     {
         action: 'dida.poll',
         label: '轮询任务',
-        fields: [{ key: 'project_ids', label: '项目 ID 列表', type: 'string[]' }],
+        fields: [stringArrayField('project_ids', '项目 ID 列表')],
     },
     {
         action: 'dida.push_task_list',
         label: '推送任务清单',
         fields: [
-            { key: 'group_id', label: '群号', type: 'string' },
-            { key: 'user_qq', label: '用户 QQ', type: 'string' },
-            { key: 'day_range', label: '时间范围', type: 'string' },
-            { key: 'limit', label: '条数上限', type: 'number' },
+            stringField('group_id', '群号'),
+            stringField('user_qq', '用户 QQ'),
+            enumField('day_range', '时间范围', ACTION_PARAM_ENUMS.didaDayRange, 'today'),
+            numberField('limit', '条数上限', 20),
         ],
     },
 ];
@@ -226,6 +268,31 @@ function makeNodeId(): string {
 
 function getActionSchema(action: string): ActionSchema | undefined {
     return ACTION_SCHEMAS.find((item) => item.action === action);
+}
+
+function withActionDefaults(action: string, params: JsonObject, pruneUnknown = false): JsonObject {
+    const schema = getActionSchema(action);
+    if (!schema) return params;
+
+    const next: JsonObject = {};
+    const allowedKeys = new Set(schema.fields.map((field) => field.key));
+
+    if (pruneUnknown) {
+        for (const key of Object.keys(params)) {
+            if (allowedKeys.has(key)) {
+                next[key] = params[key];
+            }
+        }
+    } else {
+        Object.assign(next, params);
+    }
+
+    for (const field of schema.fields) {
+        if (next[field.key] === undefined && field.defaultValue !== undefined) {
+            next[field.key] = field.defaultValue;
+        }
+    }
+    return next;
 }
 
 function toStepNode(item: JsonValue): StepNode | null {
@@ -1333,6 +1400,29 @@ function ActionParamsEditor({
                             );
                         }
 
+                        if (field.options && field.options.length > 0) {
+                            return (
+                                <div key={field.key}>
+                                    <label>{field.label}</label>
+                                    <select
+                                        value={toStringValue(params[field.key], toStringValue(field.defaultValue, ''))}
+                                        onChange={(e) =>
+                                            onChange({
+                                                ...params,
+                                                [field.key]: e.target.value,
+                                            })
+                                        }
+                                    >
+                                        {field.options.map((option) => (
+                                            <option key={option.value} value={option.value}>
+                                                {option.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            );
+                        }
+
                         return (
                             <div key={field.key}>
                                 <label>{field.label}</label>
@@ -1340,7 +1430,7 @@ function ActionParamsEditor({
                                     type={field.type === 'number' ? 'number' : 'text'}
                                     value={
                                         field.type === 'number'
-                                            ? String(toNumber(params[field.key], 0))
+                                            ? String(toNumber(params[field.key], toNumber(field.defaultValue, 0)))
                                             : toStringValue(params[field.key])
                                     }
                                     onChange={(e) =>
@@ -1458,7 +1548,7 @@ function StepTreeEditor({
                                         updateAt(idx, {
                                             ...node,
                                             action: e.target.value,
-                                            params: node.params || {},
+                                            params: withActionDefaults(e.target.value, node.params || {}, true),
                                         })
                                     }
                                 >
@@ -1474,7 +1564,7 @@ function StepTreeEditor({
                             </div>
                             <ActionParamsEditor
                                 action={node.action || 'core.send_group_msg'}
-                                params={node.params || {}}
+                                params={withActionDefaults(node.action || 'core.send_group_msg', node.params || {}, true)}
                                 onChange={(nextParams) => updateAt(idx, { ...node, params: nextParams })}
                             />
                         </>

@@ -30,7 +30,7 @@ scheduler_manager:
               group_id: "1231231234"
               user_qq: "12345678"
               day_range: "today"
-              limit: 10
+              limit: 20
 
       - name: "daily_summary"
         type: "cron"
@@ -69,4 +69,4 @@ scheduler_manager:
                   group_id: "1231231234"
                   user_qq: "12345678"
                   day_range: "today"
-                  limit: 10
+                  limit: 20
