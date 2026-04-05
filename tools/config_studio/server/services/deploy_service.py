@@ -186,9 +186,15 @@ class DeployService:
         if not local_file.exists():
             raise FileNotFoundError(f"local file not found: {local_file}")
 
+        import posixpath
+
         remote_tmp = f"{remote_file}.tmp"
-        self._ensure_remote_dir(sftp, str(Path(remote_file).parent))
+        self._ensure_remote_dir(sftp, posixpath.dirname(remote_file))
         sftp.put(str(local_file), remote_tmp)
+        try:
+            sftp.remove(remote_file)
+        except IOError:
+            pass
         sftp.rename(remote_tmp, remote_file)
 
     def _ensure_remote_dir(self, sftp: paramiko.SFTPClient, remote_dir: str) -> None:
