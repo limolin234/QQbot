@@ -1,6 +1,5 @@
 """AutoReply 工作流：当前只实现“是否需要回复”的判定。"""
 
-
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +32,10 @@ except Exception:  # pragma: no cover
 
 AUTO_REPLY_CONFIG = load_current_agent_config(__file__)
 
+
 async def start_up():
     asyncio.create_task(auto_reply_pending_worker())
+
 
 def get_auto_reply_runtime_config() -> dict[str, Any]:
     """读取并规范化 auto_reply 运行时配置。"""
@@ -68,9 +69,6 @@ def get_auto_reply_runtime_config() -> dict[str, Any]:
         "bypass_cooldown_when_at_bot": bool_config("bypass_cooldown_when_at_bot", True),
         "bot_qq": str(AUTO_REPLY_CONFIG.get("bot_qq", "")).strip(),
     }
-
-
-
 
 
 def get_auto_reply_monitor_numbers(chat_type: str = "group") -> set[str]:
@@ -112,11 +110,17 @@ def _strip_markdown_code_fence(text: str) -> str:
     raw = str(text or "").strip()
     if not raw.startswith("```"):
         return raw
-    fenced_match = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```$", raw, flags=re.IGNORECASE)
+    fenced_match = re.match(
+        r"^```(?:json)?\s*([\s\S]*?)\s*```$", raw, flags=re.IGNORECASE
+    )
     if fenced_match:
         return str(fenced_match.group(1) or "").strip()
     lines = raw.splitlines()
-    if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+    if (
+        len(lines) >= 2
+        and lines[0].strip().startswith("```")
+        and lines[-1].strip() == "```"
+    ):
         return "\n".join(lines[1:-1]).strip()
     return raw
 
@@ -243,14 +247,20 @@ class AutoReplyDispatcher:
             return False
 
         runtime_config = get_auto_reply_runtime_config()
-        min_reply_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
-        pending_max_messages = max(int(runtime_config.get("pending_max_messages", 50)), 1)
+        min_reply_interval = max(
+            int(runtime_config.get("min_reply_interval_seconds", 300)), 0
+        )
+        pending_max_messages = max(
+            int(runtime_config.get("pending_max_messages", 50)), 1
+        )
 
         auto_reply_payload = self._build_payload(
             raw_message=str(raw_message),
             cleaned_message=str(cleaned_message),
             chat_type=target_chat_type,
-            group_id=normalized_monitor_value if target_chat_type == "group" else "private",
+            group_id=(
+                normalized_monitor_value if target_chat_type == "group" else "private"
+            ),
             user_id=str(user_id),
             user_name=str(user_name),
             ts=str(ts),
@@ -268,7 +278,9 @@ class AutoReplyDispatcher:
         bypass_cooldown = (
             target_chat_type == "group"
             and bool(runtime_config.get("bypass_cooldown_when_at_bot", True))
-            and self._hit_at_bot(str(raw_message), str(runtime_config.get("bot_qq", "")))
+            and self._hit_at_bot(
+                str(raw_message), str(runtime_config.get("bot_qq", ""))
+            )
         )
         if bypass_cooldown:
             log_event(
@@ -281,7 +293,9 @@ class AutoReplyDispatcher:
 
         enqueue_now = True
         if min_reply_interval > 0 and not bypass_cooldown:
-            session_key = self._build_session_key(target_chat_type, normalized_monitor_value)
+            session_key = self._build_session_key(
+                target_chat_type, normalized_monitor_value
+            )
             now = datetime.now().timestamp()
             async with self._state_lock:
                 state = self._session_states.setdefault(
@@ -297,7 +311,9 @@ class AutoReplyDispatcher:
                 if now < next_allowed_at:
                     state["pending_payload"] = auto_reply_payload
                     previous_count = int(state.get("pending_count", 0) or 0)
-                    state["pending_count"] = min(previous_count + 1, pending_max_messages)
+                    state["pending_count"] = min(
+                        previous_count + 1, pending_max_messages
+                    )
                     if not float(state.get("pending_since", 0.0) or 0.0):
                         state["pending_since"] = now
                     log_event(
@@ -326,12 +342,20 @@ class AutoReplyDispatcher:
             await enqueue_payload(auto_reply_payload)
         return True
 
-    async def pending_worker(self, *, enqueue_payload: Callable[[dict[str, str]], Awaitable[None]]) -> None:
+    async def pending_worker(
+        self, *, enqueue_payload: Callable[[dict[str, str]], Awaitable[None]]
+    ) -> None:
         while True:
             runtime_config = get_auto_reply_runtime_config()
-            check_interval = max(int(runtime_config.get("flush_check_interval_seconds", 10)), 1)
-            min_interval = max(int(runtime_config.get("min_reply_interval_seconds", 300)), 0)
-            pending_expire = max(int(runtime_config.get("pending_expire_seconds", 3600)), 0)
+            check_interval = max(
+                int(runtime_config.get("flush_check_interval_seconds", 10)), 1
+            )
+            min_interval = max(
+                int(runtime_config.get("min_reply_interval_seconds", 300)), 0
+            )
+            pending_expire = max(
+                int(runtime_config.get("pending_expire_seconds", 3600)), 0
+            )
             now = datetime.now().timestamp()
             due_payloads: list[dict[str, str]] = []
 
@@ -380,7 +404,9 @@ class AutoReplyDispatcher:
                     state["pending_payload"] = None
                     state["pending_since"] = 0.0
                     state["pending_count"] = 0
-                    state["next_allowed_at"] = now + min_interval if min_interval > 0 else 0.0
+                    state["next_allowed_at"] = (
+                        now + min_interval if min_interval > 0 else 0.0
+                    )
 
             for payload in due_payloads:
                 await enqueue_payload(payload)
@@ -418,7 +444,11 @@ def _extract_message_ts(msg: GroupMessage | PrivateMessage) -> str:
     if ts_candidate is not None:
         try:
             ts_value = float(ts_candidate)
-            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+            return (
+                datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
         except (TypeError, ValueError, OSError):
             pass
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -517,7 +547,10 @@ async def _execute_auto_reply_payload(payload: dict[str, str]) -> None:
                     await bot.api.post_group_msg(group_id, text=reply_text)
                 else:
                     await bot.api.post_private_msg(user_id, text=reply_text)
-                log_event(stage="send_end", decision={"sent": True, "reply_length": len(reply_text)})
+                log_event(
+                    stage="send_end",
+                    decision={"sent": True, "reply_length": len(reply_text)},
+                )
             except Exception as send_error:
                 log_event(stage="send_error", error=str(send_error))
                 print(
@@ -525,7 +558,10 @@ async def _execute_auto_reply_payload(payload: dict[str, str]) -> None:
                     f"chat={chat_type} group={group_id} user={user_id} error={send_error}"
                 )
         elif should_reply_flag:
-            log_event(stage="send_skip", decision={"sent": False, "reason": "reply_text_empty"})
+            log_event(
+                stage="send_skip",
+                decision={"sent": False, "reason": "reply_text_empty"},
+            )
 
         print(
             "[AUTO_REPLY] "
@@ -587,9 +623,6 @@ async def entrance(
     )
 
 
-
-
-
 @dataclass
 class AutoReplyMessageContext:
     chat_type: str
@@ -645,7 +678,11 @@ class AutoReplyDecisionEngine:
     def __init__(self, config: dict[str, Any]):
         self.config = config if isinstance(config, dict) else {}
         raw_rules = self.config.get("rules", [])
-        self.rules = [rule for rule in raw_rules if isinstance(rule, dict) and bool(rule.get("enabled", False))]
+        self.rules = [
+            rule
+            for rule in raw_rules
+            if isinstance(rule, dict) and bool(rule.get("enabled", False))
+        ]
         self.model = str(self.config.get("model") or "gpt-4o-mini")
         try:
             self.temperature = float(self.config.get("temperature", 0.0))
@@ -669,14 +706,19 @@ class AutoReplyDecisionEngine:
             if rule_chat_type != context.chat_type:
                 continue
             target_number = str(rule.get("number", "")).strip()
-            current_number = context.group_id if context.chat_type == "group" else context.user_id
+            current_number = (
+                context.group_id if context.chat_type == "group" else context.user_id
+            )
             if target_number != str(current_number):
                 continue
             matching_rules.append(rule)
 
         context_event(
             stage="rules_filtered",
-            extra={"configured_rules": len(self.rules), "matched_rules": len(matching_rules)},
+            extra={
+                "configured_rules": len(self.rules),
+                "matched_rules": len(matching_rules),
+            },
         )
 
         if not matching_rules:
@@ -704,7 +746,7 @@ class AutoReplyDecisionEngine:
                     "matched_rule": idx,
                     "trigger_mode": expression,
                     "reply_prompt": str(rule.get("reply_prompt") or "").strip(),
-                    "rule": rule
+                    "rule": rule,
                 }
                 context_event(stage="decision_end", decision=result)
                 return result
@@ -755,8 +797,12 @@ class AutoReplyDecisionEngine:
         if result:
             return True, f"命中表达式: {expression}"
 
-        reason_text = ", ".join([f"{name}={condition_values[name]}" for name in sorted(condition_values)])
-        detail_text = "; ".join([f"{name}:{condition_reasons[name]}" for name in sorted(condition_reasons)])
+        reason_text = ", ".join(
+            [f"{name}={condition_values[name]}" for name in sorted(condition_values)]
+        )
+        detail_text = "; ".join(
+            [f"{name}:{condition_reasons[name]}" for name in sorted(condition_reasons)]
+        )
         return False, f"表达式未命中: {reason_text}; {detail_text}"
 
     def condition_always(self) -> tuple[bool, str]:
@@ -778,19 +824,23 @@ class AutoReplyDecisionEngine:
 
         return True, "检测到 @，且未配置 bot_qq，按命中处理"
 
-    def condition_keyword(self, rule: dict[str, Any], context: AutoReplyMessageContext) -> tuple[bool, str]:
+    def condition_keyword(
+        self, rule: dict[str, Any], context: AutoReplyMessageContext
+    ) -> tuple[bool, str]:
         keywords = rule.get("keywords", [])
         if not isinstance(keywords, list) or not keywords:
             return False, "keywords 为空"
 
-        text = (context.cleaned_message or "")
+        text = context.cleaned_message or ""
         for keyword in keywords:
             keyword_text = str(keyword).strip()
             if keyword_text and keyword_text in text:
                 return True, f"命中关键词: {keyword_text}"
         return False, "未命中关键词"
 
-    def condition_ai_decide(self, rule: dict[str, Any], context: AutoReplyMessageContext) -> tuple[bool, str]:
+    def condition_ai_decide(
+        self, rule: dict[str, Any], context: AutoReplyMessageContext
+    ) -> tuple[bool, str]:
         prompt = str(rule.get("ai_decision_prompt") or "").strip()
         if not prompt:
             return False, "缺少 ai_decision_prompt"
@@ -811,7 +861,7 @@ class AutoReplyDecisionEngine:
                 temperature = self.temperature
         else:
             temperature = self.temperature
-        
+
         llm_kwargs: dict[str, Any] = {
             "model_name": model_name,
             "temperature": temperature,
@@ -820,6 +870,8 @@ class AutoReplyDecisionEngine:
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
+
+        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
 
         llm = ChatOpenAI(**llm_kwargs).with_structured_output(AutoReplyAIDecision)
 
@@ -885,7 +937,10 @@ class AutoReplyDecisionEngine:
 
         should_reply = bool(final_state.get("should_reply", False))
         reason = str(final_state.get("reason", "")).strip()
-        context_event(stage="ai_decide_end", decision={"should_reply": should_reply, "reason": reason})
+        context_event(
+            stage="ai_decide_end",
+            decision={"should_reply": should_reply, "reason": reason},
+        )
         if should_reply:
             return True, reason or "ai_decide=true"
         return False, reason or "ai_decide=false"
@@ -910,7 +965,7 @@ class AutoReplyDecisionEngine:
             raise ValueError("缺少 LLM_API_KEY")
 
         temperature = self.temperature
-        
+
         if rule is not None:
             rule_temp = rule.get("temperature")
             if rule_temp is not None:
@@ -928,10 +983,14 @@ class AutoReplyDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
+        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+
         llm_base = ChatOpenAI(**llm_kwargs)
         use_raw_fallback = True
         try:
-            llm = llm_base.with_structured_output(AutoReplyGeneratedReply, include_raw=True)
+            llm = llm_base.with_structured_output(
+                AutoReplyGeneratedReply, include_raw=True
+            )
         except TypeError:
             use_raw_fallback = False
             llm = llm_base.with_structured_output(AutoReplyGeneratedReply)
@@ -970,7 +1029,9 @@ class AutoReplyDecisionEngine:
                 if parsed is not None:
                     return {
                         **state,
-                        "reply_text": str(getattr(parsed, "reply_text", "") or "").strip(),
+                        "reply_text": str(
+                            getattr(parsed, "reply_text", "") or ""
+                        ).strip(),
                     }
                 raw_output = result.get("raw")
                 fallback_reply = _extract_reply_text_from_raw_output(raw_output)
@@ -1038,7 +1099,10 @@ class AutoReplyDecisionEngine:
         )
 
         reply_text = str(final_state.get("reply_text", "")).strip()
-        context_event(stage="reply_generate_end", decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)})
+        context_event(
+            stage="reply_generate_end",
+            decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)},
+        )
         return reply_text
 
 
@@ -1112,7 +1176,9 @@ def run_auto_reply_pipeline(
         if reply_prompt:
             rule = result.get("rule")
             try:
-                reply_text = engine.generate_reply_text(reply_prompt=reply_prompt, context=context, rule=rule)
+                reply_text = engine.generate_reply_text(
+                    reply_prompt=reply_prompt, context=context, rule=rule
+                )
             except Exception as error:
                 context_event(stage="reply_generate_error", error=str(error))
     return {

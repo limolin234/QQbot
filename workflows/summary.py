@@ -1377,6 +1377,8 @@ def _build_llm(*, model_name: str | None, temperature: float) -> ChatOpenAI:
     if base_url:
         llm_kwargs["openai_api_base"] = base_url
 
+    llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+
     return ChatOpenAI(**llm_kwargs)
 
 

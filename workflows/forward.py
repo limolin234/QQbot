@@ -48,7 +48,9 @@ def get_forward_monitor_group_ids() -> set[str]:
     monitor_group_ids = FORWARD_AGENT_CONFIG.get("monitor_group_qq_number", [])
     if not isinstance(monitor_group_ids, list):
         return set()
-    return {str(group_id).strip() for group_id in monitor_group_ids if str(group_id).strip()}
+    return {
+        str(group_id).strip() for group_id in monitor_group_ids if str(group_id).strip()
+    }
 
 
 def clean_message(raw_message: str) -> str:
@@ -76,7 +78,11 @@ def _extract_message_ts(msg: GroupMessage) -> str:
             ts_value = float(ts_candidate)
             from datetime import datetime, timezone
 
-            return datetime.fromtimestamp(ts_value, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+            return (
+                datetime.fromtimestamp(ts_value, tz=timezone.utc)
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
         except (TypeError, ValueError, OSError):
             pass
     from datetime import datetime
@@ -141,7 +147,9 @@ async def group_entrance(msg: GroupMessage) -> bool:
         try:
             done_task.result()
         except Exception as error:
-            print(f"[FORWARD-ASYNC-ERROR] group={group_id} user={user_id} error={error}")
+            print(
+                f"[FORWARD-ASYNC-ERROR] group={group_id} user={user_id} error={error}"
+            )
 
     task.add_done_callback(_on_done)
     return True
@@ -183,7 +191,9 @@ async def _execute_forward(
             run_in_thread=True,
         )
         if result.get("should_forward"):
-            await bot.api.post_private_msg(QQnumber, text=str(result.get("forward_text", cleaned_message)))
+            await bot.api.post_private_msg(
+                QQnumber, text=str(result.get("forward_text", cleaned_message))
+            )
         elapsed_ms = (perf_counter() - started) * 1000
         log_event(
             stage="end",
@@ -236,10 +246,12 @@ def run_forward_graph(
     if base_url:
         llm_kwargs["openai_api_base"] = base_url
 
+    llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+
     llm = ChatOpenAI(**llm_kwargs).with_structured_output(ForwardDecision)
     decision_prompt = str(
         FORWARD_AGENT_CONFIG.get("forward_decision_prompt")
-        or "你是消息转发判定助手。仅返回 JSON：{\"should_forward\":true/false,\"reason\":\"...\"}"
+        or '你是消息转发判定助手。仅返回 JSON：{"should_forward":true/false,"reason":"..."}'
     )
 
     def decide_node(state: ForwardState) -> ForwardState:
