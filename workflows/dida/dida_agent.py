@@ -16,7 +16,7 @@ from ncatbot.core import GroupMessage, PrivateMessage
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_pool import submit_agent_job
 from bot import bot
@@ -543,8 +543,6 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
         is_new_mode = bool(result.get("is_new_mode", False))
 
         reply_text = str(result.get("reply_text", "") or "").strip()
-        dida_action = result.get("dida_action")
-        dida_response = ""
 
         if is_new_mode and should_reply_flag:
             action_result = result.get("action_result")
@@ -560,43 +558,85 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
                     "message": str(action_result.clarification_question),
                     "need_clarification": True,
                 }
-            elif action_result and action_result.dida_action:
-                dida_action = action_result.dida_action
+            elif action_result and action_result.dida_actions:
+                dida_actions = list(action_result.dida_actions)
+                batch_results: list[dict[str, Any]] = []
+
                 # Admin logic
                 runtime_config = get_dida_agent_runtime_config()
                 admin_qqs = runtime_config.get("admin_qqs", [])
-                if str(user_id) in admin_qqs:
-                    target_user_id = str(
-                        getattr(dida_action, "target_user_id", "") or ""
-                    ).strip()
-                    if not target_user_id:
-                        at_matches = re.findall(
-                            r"\[CQ:at,qq=(\d+)\]", raw_message or ""
+                at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message or "")
+
+                for action_item in dida_actions:
+                    if str(user_id) in admin_qqs:
+                        target_user_id = str(
+                            getattr(action_item, "target_user_id", "") or ""
+                        ).strip()
+                        if not target_user_id:
+                            for uid in at_matches:
+                                if uid and uid != str(user_id):
+                                    setattr(action_item, "target_user_id", uid)
+                                    break
+                            if (
+                                at_matches
+                                and not str(
+                                    getattr(action_item, "target_user_id", "") or ""
+                                ).strip()
+                            ):
+                                setattr(
+                                    action_item, "target_user_id", str(at_matches[0])
+                                )
+
+                    try:
+                        item_result = await dida_scheduler.execute_action_structured(
+                            action=action_item,
+                            chat_type=chat_type,
+                            group_id=group_id,
+                            user_id=user_id,
+                            user_name=user_name,
                         )
-                        for uid in at_matches:
-                            if uid and uid != str(user_id):
-                                setattr(dida_action, "target_user_id", uid)
-                                break
-                        if (
-                            at_matches
-                            and not str(
-                                getattr(dida_action, "target_user_id", "") or ""
-                            ).strip()
-                        ):
-                            setattr(dida_action, "target_user_id", str(at_matches[0]))
-                try:
-                    execution_result = await dida_scheduler.execute_action_structured(
-                        action=dida_action,
-                        chat_type=chat_type,
-                        group_id=group_id,
-                        user_id=user_id,
-                        user_name=user_name,
+                        if not isinstance(item_result, dict):
+                            item_result = {
+                                "ok": False,
+                                "message": "Dida 返回结构异常",
+                            }
+                    except Exception as action_error:
+                        item_result = {
+                            "ok": False,
+                            "message": f"Dida 操作失败：{action_error}",
+                        }
+                    batch_results.append(item_result)
+
+                total_count = len(batch_results)
+                success_count = sum(
+                    1 for item in batch_results if bool(item.get("ok", False))
+                )
+                failed_count = total_count - success_count
+
+                detail_lines: list[str] = []
+                for idx, item in enumerate(batch_results, start=1):
+                    item_msg = (
+                        str(item.get("message", "") or "").strip() or "（无返回信息）"
                     )
-                except Exception as action_error:
-                    execution_result = {
-                        "ok": False,
-                        "message": f"Dida 操作失败：{action_error}",
-                    }
+                    detail_lines.append(f"{idx}. {item_msg}")
+
+                summary_header = (
+                    f"批量执行完成：成功 {success_count} 条，失败 {failed_count} 条"
+                )
+                summary_message = (
+                    f"{summary_header}\n" + "\n".join(detail_lines)
+                    if detail_lines
+                    else summary_header
+                )
+
+                execution_result = {
+                    "ok": failed_count == 0,
+                    "message": summary_message,
+                    "batch_results": batch_results,
+                    "total_count": total_count,
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                }
 
             # Model B
             try:
@@ -622,44 +662,7 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
                 reply_text = f"（生成回复失败：{reply_error}）"
                 if execution_result:
                     reply_text += f"\n执行结果：{execution_result.get('message')}"
-
-        elif dida_action is not None:
-            runtime_config = get_dida_agent_runtime_config()
-            admin_qqs = runtime_config.get("admin_qqs", [])
-            if str(user_id) in admin_qqs:
-                target_user_id = str(
-                    getattr(dida_action, "target_user_id", "") or ""
-                ).strip()
-                if not target_user_id:
-                    at_matches = re.findall(r"\[CQ:at,qq=(\d+)\]", raw_message or "")
-                    for uid in at_matches:
-                        if uid and uid != str(user_id):
-                            setattr(dida_action, "target_user_id", uid)
-                            break
-                    if (
-                        at_matches
-                        and not str(
-                            getattr(dida_action, "target_user_id", "") or ""
-                        ).strip()
-                    ):
-                        setattr(dida_action, "target_user_id", str(at_matches[0]))
-            try:
-                dida_response = await dida_scheduler.execute_action(
-                    action=dida_action,
-                    chat_type=chat_type,
-                    group_id=group_id,
-                    user_id=user_id,
-                    user_name=user_name,
-                )
-            except Exception as action_error:
-                dida_response = f"⚠️ Dida 操作失败：{action_error}"
         final_reply = reply_text
-        if dida_response:
-            final_reply = (
-                f"{reply_text}\n{dida_response}".strip()
-                if reply_text
-                else dida_response.strip()
-            )
 
         if should_reply_flag and final_reply:
             log_event(stage="send_start", extra={"reply_length": len(final_reply)})
@@ -776,6 +779,8 @@ class DidaAgentAIDecision(BaseModel):
 
 
 class DidaAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     action_type: Literal["create", "list", "delete", "complete", "update"] = Field(
         description="Dida 动作类型"
     )
@@ -796,8 +801,11 @@ class DidaAction(BaseModel):
 
 
 class ActionLLMResult(BaseModel):
-    dida_action: Optional[DidaAction] = Field(
-        default=None, description="Dida 动作，若无明确动作或有歧义则为 None"
+    model_config = ConfigDict(extra="forbid")
+
+    dida_actions: list[DidaAction] = Field(
+        default_factory=list,
+        description="Dida 动作列表。单任务时长度为 1，多任务时长度大于 1",
     )
     need_clarification: bool = Field(
         default=False, description="是否需要用户澄清（如存在同名任务）"
@@ -809,11 +817,6 @@ class ActionLLMResult(BaseModel):
 
 class ReplyResponse(BaseModel):
     reply_text: str = Field(description="最终回复给用户的文本")
-
-
-class DidaAgentGeneratedReply(BaseModel):
-    reply_text: str = Field(default="", description="自动回复文本")
-    dida_action: Optional[DidaAction] = Field(default=None, description="Dida 动作")
 
 
 class DidaAgentAIState(TypedDict):
@@ -828,20 +831,6 @@ class DidaAgentAIState(TypedDict):
     history_messages: list[str]
     should_reply: bool
     reason: str
-
-
-class DidaAgentGenerateState(TypedDict):
-    prompt: str
-    chat_type: str
-    group_id: str
-    user_id: str
-    user_name: str
-    ts: str
-    raw_message: str
-    cleaned_message: str
-    history_messages: list[str]
-    reply_text: str
-    dida_action: Optional[DidaAction]
 
 
 class DidaAgentDecisionEngine:
@@ -1052,7 +1041,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
@@ -1228,7 +1217,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
@@ -1291,21 +1280,21 @@ class DidaAgentDecisionEngine:
                     except Exception:
                         pass
                 return ActionLLMResult(
-                    dida_action=None,
+                    dida_actions=[],
                     need_clarification=True,
                     clarification_question="系统内部错误：模型输出解析失败",
                 )
             if isinstance(result, ActionLLMResult):
                 return result
             return ActionLLMResult(
-                dida_action=None,
+                dida_actions=[],
                 need_clarification=True,
                 clarification_question="系统内部错误：模型输出解析失败",
             )
         except Exception as e:
             print(f"[DIDA_AGENT-ACTION-ERROR] {e}")
             return ActionLLMResult(
-                dida_action=None,
+                dida_actions=[],
                 need_clarification=True,
                 clarification_question=f"系统错误：{str(e)}",
             )
@@ -1323,16 +1312,18 @@ class DidaAgentDecisionEngine:
         prompt = str(reply_prompt).strip()
 
         # Build structured input for Model B
-        action_summary = {}
-        if action_result and action_result.dida_action:
-            act = action_result.dida_action
-            action_summary = {
-                "action_type": act.action_type,
-                "title": act.title,
-                "project_id": act.project_id,
-                "due_date": act.due_date,
-                "is_all_day": act.is_all_day,
-            }
+        action_summary: list[dict[str, Any]] = []
+        if action_result and action_result.dida_actions:
+            for act in action_result.dida_actions:
+                action_summary.append(
+                    {
+                        "action_type": act.action_type,
+                        "title": act.title,
+                        "project_id": act.project_id,
+                        "due_date": act.due_date,
+                        "is_all_day": act.is_all_day,
+                    }
+                )
 
         llm_input = {
             "meta": {
@@ -1346,7 +1337,8 @@ class DidaAgentDecisionEngine:
                 "raw_message": context.raw_message,
                 "cleaned_message": context.cleaned_message,
             },
-            "action": action_summary,
+            "actions": action_summary,
+            "action_count": len(action_summary),
             "execution": execution_result
             or {"ok": False, "message": "未执行", "data": None},
         }
@@ -1382,7 +1374,7 @@ class DidaAgentDecisionEngine:
             "model_name": model_name,
             "temperature": temperature,
             "openai_api_key": api_key,
-            "max_tokens": 1024,
+            "max_tokens": 4096,
         }
         base_url = os.getenv("LLM_API_BASE_URL")
         if base_url:
@@ -1467,255 +1459,6 @@ class DidaAgentDecisionEngine:
                 pass
             return ReplyResponse(reply_text=f"（系统错误：{e}）")
 
-    def generate_reply_text(
-        self,
-        *,
-        reply_prompt: str,
-        context: DidaAgentMessageContext,
-        rule: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        prompt = str(reply_prompt).strip()
-
-        # Inject Dida task context if available
-        try:
-            context_path = os.path.join("data", "dida_context.json")
-            if os.path.exists(context_path):
-                with open(context_path, "r", encoding="utf-8") as f:
-                    dida_data = json.load(f)
-
-                task_context_lines = []
-                # Check for user-specific context or fallback to all
-                # The keys in dida_context.json are internal user IDs (e.g., from dida_tokens.json)
-                # Since dida_agent doesn't know the internal ID mapping easily without auth,
-                # we will include all available tasks from the context file.
-                # In a single-user/couple bot scenario, this is usually fine.
-
-                # Only include tasks for the current user to avoid context pollution and privacy issues
-                target_uids = {str(context.user_id)}
-
-                # Admin permission check
-                runtime_config = get_dida_agent_runtime_config()
-                admin_qqs = runtime_config.get("admin_qqs", [])
-                is_admin = str(context.user_id) in admin_qqs
-
-                if is_admin:
-                    # If admin, allow seeing tasks of mentioned users
-                    at_matches = re.findall(
-                        r"\[CQ:at,qq=(\d+)\]", context.raw_message or ""
-                    )
-                    for uid in at_matches:
-                        target_uids.add(str(uid))
-
-                for uid, tasks in dida_data.items():
-                    if str(uid) not in target_uids:
-                        continue
-                    if not isinstance(tasks, list) or not tasks:
-                        continue
-                    for t in tasks:
-                        tid = str(t.get("id") or "")
-                        ttitle = str(t.get("title") or "")
-                        tproject = str(t.get("project") or "")
-                        tdue_raw = str(t.get("due") or "")
-                        tdue = "无到期"
-                        if tdue_raw:
-                            try:
-                                # Clean up potential "Z" for isoformat
-                                _dt = datetime.fromisoformat(
-                                    tdue_raw.replace("Z", "+00:00")
-                                )
-                                # Convert to local
-                                dt_local = _dt.astimezone()
-                                if bool(t.get("isAllDay")):
-                                    tdue = dt_local.strftime("%Y-%m-%d") + " (全天)"
-                                else:
-                                    tdue = dt_local.strftime("%Y-%m-%d %H:%M")
-                            except ValueError:
-                                tdue = tdue_raw
-                        # Format: [Project] Title (ID: ...) Due: ...
-                        task_context_lines.append(
-                            f"- [{tproject}] {ttitle} (ID: {tid}) Due: {tdue}"
-                        )
-
-                if task_context_lines:
-                    prompt += (
-                        "\n\n【当前 Dida 任务列表（仅供 AI 参考，不要泄露 ID 给用户，但在调用工具时必须使用 ID）】:\n"
-                        + "\n".join(task_context_lines)
-                    )
-
-                if is_admin:
-                    prompt += "\n\n【权限提醒】你是管理员，可以操作他人的任务。若指令涉及他人（如“查看@A的任务”），请在 DidaAction 中准确填写 target_user_id（即被 @ 的用户 QQ 号）。"
-        except Exception as e:
-            pass  # Ignore context loading errors
-
-        if not prompt:
-            return {"reply_text": "", "dida_action": None}
-
-        model_name = (
-            str(rule.get("reply_model") or rule.get("model") or self.model)
-            if rule
-            else self.model
-        )
-
-        if load_dotenv is not None:
-            load_dotenv(override=False)
-        api_key = os.getenv("LLM_API_KEY")
-        if not api_key:
-            raise ValueError("缺少 LLM_API_KEY")
-
-        temperature = self.temperature
-
-        if rule is not None:
-            rule_temp = rule.get("temperature")
-            if rule_temp is not None:
-                try:
-                    temperature = float(rule_temp)
-                except (TypeError, ValueError):
-                    pass  # 转换失败则保持全局值
-
-        llm_kwargs: dict[str, Any] = {
-            "model_name": model_name,
-            "temperature": temperature,
-            "openai_api_key": api_key,
-        }
-        base_url = os.getenv("LLM_API_BASE_URL")
-        if base_url:
-            llm_kwargs["openai_api_base"] = base_url
-
-        llm_kwargs["extra_body"] = {"reasoning_split": True}
-
-        llm_base = ChatOpenAI(**llm_kwargs)
-        use_raw_fallback = True
-        try:
-            llm = llm_base.with_structured_output(
-                DidaAgentGeneratedReply,
-                include_raw=True,
-                method="function_calling",
-            )
-        except TypeError:
-            use_raw_fallback = False
-            llm = llm_base.with_structured_output(
-                DidaAgentGeneratedReply, method="function_calling"
-            )
-
-        def generate_node(state: DidaAgentGenerateState) -> DidaAgentGenerateState:
-            llm_input = {
-                "chat_type": state["chat_type"],
-                "group_id": state["group_id"],
-                "user_id": state["user_id"],
-                "user_name": state["user_name"],
-                "ts": state["ts"],
-                "raw_message": state["raw_message"],
-                "cleaned_message": state["cleaned_message"],
-                "history_messages": state["history_messages"],
-            }
-            messages = [
-                SystemMessage(content=state["prompt"] + "\nPlease output valid JSON."),
-                HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
-            ]
-            try:
-                result = llm.invoke(messages)
-            except Exception:
-                # 某些兼容模型不会遵守结构化输出，改走原始文本兜底，避免 reply_len=0
-                fallback_reply = ""
-                try:
-                    raw_result = llm_base.invoke(messages)
-                    fallback_reply = _extract_reply_text_from_raw_output(raw_result)
-                except Exception:
-                    fallback_reply = ""
-                return {
-                    **state,
-                    "reply_text": fallback_reply or _default_reply_when_parse_failed(),
-                    "dida_action": None,
-                }
-            if use_raw_fallback and isinstance(result, dict):
-                parsed = result.get("parsed")
-                if parsed is not None:
-                    return {
-                        **state,
-                        "reply_text": str(
-                            getattr(parsed, "reply_text", "") or ""
-                        ).strip(),
-                        "dida_action": getattr(parsed, "dida_action", None),
-                    }
-                raw_output = result.get("raw")
-                fallback_reply = _extract_reply_text_from_raw_output(raw_output)
-                if fallback_reply:
-                    return {
-                        **state,
-                        "reply_text": fallback_reply,
-                        "dida_action": None,
-                    }
-                parse_error = result.get("parsing_error")
-                if parse_error:
-                    return {
-                        **state,
-                        "reply_text": _default_reply_when_parse_failed(),
-                        "dida_action": None,
-                    }
-                return {
-                    **state,
-                    "reply_text": _default_reply_when_parse_failed(),
-                    "dida_action": None,
-                }
-            structured_reply = str(getattr(result, "reply_text", "") or "").strip()
-            if structured_reply:
-                return {
-                    **state,
-                    "reply_text": structured_reply,
-                    "dida_action": getattr(result, "dida_action", None),
-                }
-            fallback_reply = _extract_reply_text_from_raw_output(result)
-            return {
-                **state,
-                "reply_text": fallback_reply or _default_reply_when_parse_failed(),
-                "dida_action": None,
-            }
-
-        graph = StateGraph(DidaAgentGenerateState)
-        graph.add_node("generate", generate_node)
-        graph.add_edge(START, "generate")
-        graph.add_edge("generate", END)
-        app = graph.compile()
-        context_event = bind_agent_event(
-            agent_name="dida_agent",
-            task_type="DIDA_AGENT",
-            run_id=context.run_id,
-            chat_type=context.chat_type,
-            group_id=context.group_id,
-            user_id=context.user_id,
-            user_name=context.user_name,
-            ts=context.ts,
-        )
-
-        context_event(
-            stage="reply_generate_start",
-            extra={"model": model_name, "history_count": len(context.history_messages)},
-        )
-
-        final_state = app.invoke(
-            {
-                "prompt": prompt,
-                "chat_type": context.chat_type,
-                "group_id": context.group_id,
-                "user_id": context.user_id,
-                "user_name": context.user_name,
-                "ts": context.ts,
-                "raw_message": context.raw_message,
-                "cleaned_message": context.cleaned_message,
-                "history_messages": context.history_messages,
-                "reply_text": "",
-                "dida_action": None,
-            }
-        )
-
-        reply_text = str(final_state.get("reply_text", "")).strip()
-        dida_action = final_state.get("dida_action")
-        context_event(
-            stage="reply_generate_end",
-            decision={"reply_length": len(reply_text), "has_reply": bool(reply_text)},
-        )
-        return {"reply_text": reply_text, "dida_action": dida_action}
-
 
 def run_dida_agent_pipeline(
     *,
@@ -1789,73 +1532,68 @@ def run_dida_agent_pipeline(
         f"[DIDA_DEBUG] should_reply finished. cost={t1-t0:.3f}s result={bool(result.get('should_reply'))} run_id={run_id}"
     )
 
-    # 然后生成具体的回复内容文本
-    reply_payload: dict[str, Any] = {"reply_text": "", "dida_action": None}
-
     rule = result.get("rule") if isinstance(result.get("rule"), dict) else {}
     action_prompt = str(rule.get("action_prompt", "")).strip()
     is_new_mode = bool(action_prompt) and bool(rule.get("dida_enabled", False))
 
-    if bool(result.get("should_reply", False)):
-        if is_new_mode:
-            # Model A (Action LLM)
-            try:
-                print(f"[DIDA_DEBUG] generate_action start. run_id={run_id}")
-                action_res = engine.generate_action(
-                    action_prompt=action_prompt, context=context, rule=rule
-                )
-                t2 = perf_counter()
-                print(
-                    f"[DIDA_DEBUG] generate_action finished. cost={t2-t1:.3f}s run_id={run_id}"
-                )
+    if bool(result.get("should_reply", False)) and is_new_mode:
+        # Model A (Action LLM)
+        try:
+            print(f"[DIDA_DEBUG] generate_action start. run_id={run_id}")
+            action_res = engine.generate_action(
+                action_prompt=action_prompt, context=context, rule=rule
+            )
+            t2 = perf_counter()
+            print(
+                f"[DIDA_DEBUG] generate_action finished. cost={t2-t1:.3f}s run_id={run_id}"
+            )
 
-                return {
-                    "should_reply": True,
-                    "reason": str(result.get("reason", "")),
-                    "matched_rule": result.get("matched_rule"),
-                    "trigger_mode": result.get("trigger_mode", ""),
-                    "is_new_mode": True,
-                    "action_result": action_res,
-                    "context": context,
-                    "rule": rule,
-                    "engine": engine,
-                    "chat_type": context.chat_type,
-                    "group_id": context.group_id,
-                    "user_id": context.user_id,
-                }
-            except Exception as error:
-                context_event(stage="action_generate_error", error=str(error))
-                print(f"[DIDA_AGENT-ERROR] generate_action failed: {error}")
-                import traceback
+            return {
+                "should_reply": True,
+                "reason": str(result.get("reason", "")),
+                "matched_rule": result.get("matched_rule"),
+                "trigger_mode": result.get("trigger_mode", ""),
+                "is_new_mode": True,
+                "action_result": action_res,
+                "context": context,
+                "rule": rule,
+                "engine": engine,
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+            }
+        except Exception as error:
+            context_event(stage="action_generate_error", error=str(error))
+            print(f"[DIDA_AGENT-ERROR] generate_action failed: {error}")
+            import traceback
 
-                traceback.print_exc()
-                return {
-                    "should_reply": False,
-                    "reason": f"action_error: {error}",
-                    "chat_type": context.chat_type,
-                    "group_id": context.group_id,
-                    "user_id": context.user_id,
-                }
+            traceback.print_exc()
+            return {
+                "should_reply": False,
+                "reason": f"action_error: {error}",
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+            }
 
-        reply_prompt = str(result.get("reply_prompt", "")).strip()
-        if reply_prompt:
-            try:
-                reply_payload = engine.generate_reply_text(
-                    reply_prompt=reply_prompt, context=context, rule=rule
-                )
-            except Exception as error:
-                context_event(stage="reply_generate_error", error=str(error))
-    dida_action = reply_payload.get("dida_action")
-    if not bool(rule.get("dida_enabled", False)):
-        dida_action = None
-        reply_payload["dida_action"] = None
+    if bool(result.get("should_reply", False)) and not is_new_mode:
+        return {
+            "should_reply": False,
+            "reason": "legacy_path_removed: dida_enabled/action_prompt 未满足",
+            "matched_rule": result.get("matched_rule"),
+            "trigger_mode": result.get("trigger_mode", ""),
+            "chat_type": context.chat_type,
+            "group_id": context.group_id,
+            "user_id": context.user_id,
+            "is_new_mode": False,
+        }
+
     return {
         "should_reply": bool(result.get("should_reply", False)),
         "reason": str(result.get("reason", "")),
         "matched_rule": result.get("matched_rule"),
         "trigger_mode": result.get("trigger_mode", ""),
-        "reply_text": str(reply_payload.get("reply_text", "") or ""),
-        "dida_action": dida_action,
+        "reply_text": "",
         "chat_type": context.chat_type,
         "group_id": context.group_id,
         "user_id": context.user_id,
