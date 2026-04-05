@@ -246,7 +246,6 @@ const FIXED_AGENT_OPTIONS: Array<{ key: FixedAgentKey; label: string }> = [
     { key: 'forward_config', label: '转发 Agent' },
     { key: 'auto_reply_config', label: '自动回复 Agent' },
     { key: 'dida_agent_config', label: '滴答 Agent' },
-    { key: 'dida_config', label: '滴答轮询配置' },
 ];
 
 function asObject(value: JsonValue | undefined): JsonObject {
@@ -555,7 +554,8 @@ function defaultSections(): Record<FixedAgentKey, FixedSection> {
 
 function normalizeFixedSections(agent: AgentConfigRoot): Record<FixedAgentKey, FixedSection> {
     const defaults = defaultSections();
-    for (const key of FIXED_AGENT_OPTIONS.map((x) => x.key)) {
+    const keys = Object.keys(defaults) as FixedAgentKey[];
+    for (const key of keys) {
         let rawSection = asObject(agent[key]);
         if (key === 'dida_config') {
             const legacy = asObject(agent.dida_scheduler_config);
@@ -678,7 +678,7 @@ function SummaryRulesEditor({
     const editingRule = editingIdx !== null ? rules[editingIdx] : null;
 
     return (
-        <div className="card-grid">
+        <div className="schedule-grid">
             {rules.map((rule, idx) => (
                 <div key={idx} className="rule-card">
                     <div className="row between">
@@ -937,7 +937,7 @@ function AutoReplyRulesEditor({
     const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
 
     return (
-        <div className="card-grid">
+        <div className="schedule-grid">
             {rules.map((rule, idx) => (
                 <div key={idx} className="rule-card">
                     <div className="row between">
@@ -1073,7 +1073,7 @@ function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (ne
     const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
 
     return (
-        <div className="card-grid">
+        <div className="schedule-grid">
             {rules.map((rule, idx) => (
                 <div key={idx} className="rule-card">
                     <div className="row between">
@@ -1348,9 +1348,6 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
                 <div className="rule-preview">
                     due_window：{value.due_window_seconds}s | max_scan：{value.max_tasks_scan_per_user} | project_ids：{value.project_ids.length}
                 </div>
-                <div className="muted top-gap">
-                    说明：轮询触发频率由 Scheduler 的 dida.poll 任务控制；这里维护 Dida 拉取的全局运行参数。
-                </div>
             </div>
 
             <FormModal open={openGlobalModal} title="Dida 全局设置" onClose={() => setOpenGlobalModal(false)}>
@@ -1504,27 +1501,6 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
             <div className="top-gap">
                 <label>规则列表</label>
                 <DidaRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
-            </div>
-        </div>
-    );
-}
-
-function DidaSchedulerForm({ value }: { value: DidaConfig }) {
-    return (
-        <div>
-            <div className="summary-card">
-                <div className="row between wrap gap-8">
-                    <strong>滴答轮询配置（只读）</strong>
-                </div>
-                <div className="rule-preview">
-                    client_id：{value.client_id ? '已配置' : '未配置'} | client_secret：{value.client_secret ? '已配置' : '未配置'}
-                </div>
-                <div className="rule-preview">
-                    redirect_uri：{value.redirect_uri || '未配置'}
-                </div>
-                <div className="muted top-gap">
-                    说明：本页仅展示当前配置，所有 Dida 参数（OAuth 与运行参数）统一在「滴答 Agent {'>'} Dida 全局设置」编辑，避免多入口冲突。
-                </div>
             </div>
         </div>
     );
@@ -1685,7 +1661,7 @@ function StepTreeEditor({
     };
 
     return (
-        <div className="card-grid" style={{ marginLeft: depth * 12 }}>
+        <div className="schedule-grid" style={{ marginLeft: depth * 12 }}>
             {nodes.map((node, idx) => (
                 <div key={node.id || `${node.kind}_${idx}`} className="node">
                     <div className="row between gap-8 wrap">
@@ -1838,6 +1814,7 @@ function StepTreePreview({ nodes }: { nodes: StepNode[] }) {
 
 export default function App() {
     const [tab, setTab] = useState<TabKey>('basic');
+    const [openSchedulerHelp, setOpenSchedulerHelp] = useState(false);
     const [status, setStatus] = useState('idle');
     const [error, setError] = useState('');
 
@@ -2389,15 +2366,23 @@ export default function App() {
                             />
                         )}
 
-                        {selectedAgent === 'dida_config' && (
-                            <DidaSchedulerForm value={didaConfig} />
-                        )}
+
                     </section>
                 )}
 
                 {tab === 'scheduler' && (
                     <section className="panel">
-                        <h2>Scheduler 设置</h2>
+                        <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            Scheduler 设置
+                            <button
+                                className="icon-btn"
+                                onClick={() => setOpenSchedulerHelp(true)}
+                                title="使用说明"
+                                style={{ borderRadius: '50%', width: '24px', height: '24px', padding: 0, minWidth: 0, lineHeight: '24px', display: 'inline-block', textAlign: 'center', fontSize: '14px', cursor: 'pointer' }}
+                            >
+                                ?
+                            </button>
+                        </h2>
                         {showSummaryMissingWarning && (
                             <div className="warning top-gap">
                                 已开启 scheduler_manager，但未发现启用的 summary.daily_report 任务；日报不会自动执行。
@@ -2408,54 +2393,7 @@ export default function App() {
                                 已配置 Dida 清单并开启 scheduler_manager，但未发现启用的 dida.poll 任务；Dida 清单不会自动拉取。
                             </div>
                         )}
-                        <details className="scheduler-help top-gap" open>
-                            <summary>Scheduler 功能使用说明</summary>
-                            <div className="scheduler-help-content">
-                                <h4>1. 可用参数</h4>
-                                <ul>
-                                    <li>timezone: 调度时区，例如 Asia/Shanghai。cron 计算会使用该时区。</li>
-                                    <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
-                                    <li>name: 任务名称，仅用于识别和展示。</li>
-                                    <li>type: 调度类型，可选 cron 或 interval。</li>
-                                    <li>执行时间(HH:MM:SS): 仅在 type=cron 时填写，系统会自动转换为 cron 表达式。</li>
-                                    <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
-                                    <li>enabled: 是否启用该 schedule。</li>
-                                    <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
-                                </ul>
 
-                                <h4>2. 可用操作</h4>
-                                <ul>
-                                    <li>新增 Schedule: 创建一条新的调度任务。</li>
-                                    <li>复制: 复制当前任务，用于快速创建相似任务。</li>
-                                    <li>上移/下移: 调整任务执行顺序（保存后写入 YAML 顺序）。</li>
-                                    <li>删除: 删除任务。</li>
-                                    <li>保存并编译 Scheduler: 调用后端编译接口并保存到 agent_config.yaml。</li>
-                                    <li>刷新时间线: 基于当前配置计算未来触发时间。</li>
-                                </ul>
-
-                                <h4>3. 节点类型与嵌套</h4>
-                                <ul>
-                                    <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
-                                    <li>group: 逻辑分组节点，children 内可继续嵌套 action/group。</li>
-                                </ul>
-
-                                <h4>4. group/action 参数说明</h4>
-                                <ul>
-                                    <li>group.name: 分组名称，仅用于结构化组织步骤。</li>
-                                    <li>group.children: 子步骤列表，按顺序执行。</li>
-                                    <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
-                                    <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
-                                </ul>
-
-                                <h4>5. 推荐使用流程</h4>
-                                <ol>
-                                    <li>先创建 schedule 并设置 type、执行时间(HH:MM:SS)/seconds、enabled。</li>
-                                    <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
-                                    <li>点击刷新时间线确认触发节奏。</li>
-                                    <li>点击保存并编译 Scheduler 落盘生效。</li>
-                                </ol>
-                            </div>
-                        </details>
 
                         <div className="row gap-8 wrap">
                             <div className="grow">
@@ -2487,118 +2425,64 @@ export default function App() {
                             {schedulerMessage && <span className="muted">{schedulerMessage}</span>}
                         </div>
 
-                        <div className="two-col top-gap">
-                            <div className="card">
-                                <h3>Schedule 列表</h3>
-                                <ul className="list">
-                                    {schedulerConfig.schedules.map((item, idx) => (
-                                        <li
-                                            key={`${item.name}_${idx}`}
-                                            className={selectedScheduleIndex === idx ? 'selected' : ''}
-                                            onClick={() => setSelectedScheduleIndex(idx)}
-                                        >
-                                            <div className="grow">
-                                                <div>
-                                                    {item.name || `schedule_${idx + 1}`} | {item.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | {item.enabled ? '已启用' : '已停用'}
-                                                </div>
-                                                <div className="rule-preview">
-                                                    {item.type === 'cron'
-                                                        ? `执行时间: ${(() => {
-                                                            const hms = hmsFromCron(item.expression);
-                                                            return `${hms.hour}:${hms.minute}:${hms.second}`;
-                                                        })()}`
-                                                        : `执行间隔: ${item.seconds || 60} 秒`}
-                                                </div>
-                                                <StepTreePreview nodes={item.steps_tree || []} />
-                                            </div>
-                                            <div className="row gap-8 wrap">
+
+                        <div className="card top-gap">
+                            <h3>时间线预览</h3>
+                            <div className="timeline">
+                                {timelineEvents.length === 0 ? (
+                                    <div className="muted">暂无数据，点击“刷新时间线”生成。</div>
+                                ) : (
+                                    timelineEvents.map((event, idx) => (
+                                        <div key={`${event.schedule_name}_${event.trigger_at}_${idx}`}>
+                                            [{event.source}] {event.schedule_name} - {event.trigger_at}
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="top-gap">
+                            <label>Schedule 列表</label>
+                            <div className="schedule-grid">
+                                {schedulerConfig.schedules.map((item, idx) => (
+                                    <div className="rule-card" key={`${item.name}_${idx}`} style={{ display: 'flex', flexDirection: 'column' }}>
+                                        <div className="row between">
+                                            <strong>{item.name || `schedule_${idx + 1}`}</strong>
+                                            <div className="row gap-8">
+                                                <SwitchField
+                                                    checked={item.enabled}
+                                                    onChange={(enabled) => updateScheduleAt(idx, { ...item, enabled })}
+                                                    label="启用"
+                                                />
+                                                <button onClick={() => { setSelectedScheduleIndex(idx); setOpenScheduleBasicModal(true); }}>编辑基础参数</button>
+                                                <button onClick={() => { setSelectedScheduleIndex(idx); setOpenScheduleStepModal(true); }}>编辑执行步骤</button>
+                                                <button onClick={() => duplicateSchedule(idx)}>复制</button>
                                                 <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        moveSchedule(idx, -1);
-                                                    }}
-                                                    disabled={idx === 0}
-                                                >
-                                                    上移
-                                                </button>
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        moveSchedule(idx, 1);
-                                                    }}
-                                                    disabled={idx === schedulerConfig.schedules.length - 1}
-                                                >
-                                                    下移
-                                                </button>
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        duplicateSchedule(idx);
-                                                    }}
-                                                >
-                                                    复制
-                                                </button>
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        removeSchedule(idx);
-                                                    }}
+                                                    onClick={() => removeSchedule(idx)}
                                                 >
                                                     删除
                                                 </button>
                                             </div>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-
-                            <div className="card">
-                                <h3>时间线预览</h3>
-                                <div className="timeline">
-                                    {timelineEvents.length === 0 ? (
-                                        <div className="muted">暂无数据，点击“刷新时间线”生成。</div>
-                                    ) : (
-                                        timelineEvents.map((event, idx) => (
-                                            <div key={`${event.schedule_name}_${event.trigger_at}_${idx}`}>
-                                                [{event.source}] {event.schedule_name} - {event.trigger_at}
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
+                                        </div>
+                                        <div className="rule-preview">
+                                            类型：{item.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} |
+                                            {item.type === 'cron'
+                                                ? ` 执行时间：${(() => {
+                                                    const hms = hmsFromCron(item.expression);
+                                                    return `${hms.hour}:${hms.minute}:${hms.second}`;
+                                                })()}`
+                                                : ` 执行间隔：${item.seconds || 60} 秒`}
+                                        </div>
+                                        <div className="rule-preview top-gap" style={{ flexGrow: 1, borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
+                                            <StepTreePreview nodes={item.steps_tree || []} />
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         </div>
 
                         {selectedSchedule ? (
-                            <div className="card top-gap">
-                                <h3>当前任务</h3>
-                                <div className="summary-card">
-                                    <div className="row between wrap gap-8">
-                                        <strong>{selectedSchedule.name || '未命名任务'}</strong>
-                                        <div className="row gap-8">
-                                            <button onClick={() => setOpenScheduleBasicModal(true)}>编辑基础参数</button>
-                                            <button onClick={() => setOpenScheduleStepModal(true)}>编辑执行步骤</button>
-                                        </div>
-                                    </div>
-                                    <div className="rule-preview">
-                                        类型：{selectedSchedule.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | 状态：{selectedSchedule.enabled ? '已启用' : '已停用'}
-                                    </div>
-                                    <div className="rule-preview">
-                                        {selectedSchedule.type === 'cron'
-                                            ? `执行时间：${(() => {
-                                                const hms = hmsFromCron(selectedSchedule.expression);
-                                                return `${hms.hour}:${hms.minute}:${hms.second}`;
-                                            })()}`
-                                            : `执行间隔：${selectedSchedule.seconds || 60} 秒`}
-                                    </div>
-                                </div>
-
-                                <div className="top-gap">
-                                    <label>步骤树预览</label>
-                                    <div className="card-grid">
-                                        <StepTreePreview nodes={selectedSchedule.steps_tree || []} />
-                                    </div>
-                                </div>
-
+                            <>
                                 <FormModal
                                     open={openScheduleBasicModal}
                                     title="Schedule 基础参数"
@@ -2739,7 +2623,7 @@ export default function App() {
                                         />
                                     </div>
                                 </FormModal>
-                            </div>
+                            </>
                         ) : (
                             <div className="muted top-gap">暂无 Schedule，请先新增。</div>
                         )}
@@ -2805,6 +2689,55 @@ export default function App() {
                                 </li>
                             ))}
                         </ul>
+                        <FormModal open={openSchedulerHelp} title="Scheduler 功能使用说明" onClose={() => setOpenSchedulerHelp(false)}>
+                            <div className="scheduler-help-content" style={{ maxHeight: '600px', overflowY: 'auto' }}>
+
+                                <h4>1. 可用参数</h4>
+                                <ul>
+                                    <li>timezone: 调度时区，例如 Asia/Shanghai。cron 计算会使用该时区。</li>
+                                    <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
+                                    <li>name: 任务名称，仅用于识别和展示。</li>
+                                    <li>type: 调度类型，可选 cron 或 interval。</li>
+                                    <li>执行时间(HH:MM:SS): 仅在 type=cron 时填写，系统会自动转换为 cron 表达式。</li>
+                                    <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
+                                    <li>enabled: 是否启用该 schedule。</li>
+                                    <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
+                                </ul>
+
+                                <h4>2. 可用操作</h4>
+                                <ul>
+                                    <li>新增 Schedule: 创建一条新的调度任务。</li>
+                                    <li>复制: 复制当前任务，用于快速创建相似任务。</li>
+                                    <li>上移/下移: 调整任务执行顺序（保存后写入 YAML 顺序）。</li>
+                                    <li>删除: 删除任务。</li>
+                                    <li>保存并编译 Scheduler: 调用后端编译接口并保存到 agent_config.yaml。</li>
+                                    <li>刷新时间线: 基于当前配置计算未来触发时间。</li>
+                                </ul>
+
+                                <h4>3. 节点类型与嵌套</h4>
+                                <ul>
+                                    <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
+                                    <li>group: 逻辑分组节点，children 内可继续嵌套 action/group。</li>
+                                </ul>
+
+                                <h4>4. group/action 参数说明</h4>
+                                <ul>
+                                    <li>group.name: 分组名称，仅用于结构化组织步骤。</li>
+                                    <li>group.children: 子步骤列表，按顺序执行。</li>
+                                    <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
+                                    <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
+                                </ul>
+
+                                <h4>5. 推荐使用流程</h4>
+                                <ol>
+                                    <li>先创建 schedule 并设置 type、执行时间(HH:MM:SS)/seconds、enabled。</li>
+                                    <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
+                                    <li>点击刷新时间线确认触发节奏。</li>
+                                    <li>点击保存并编译 Scheduler 落盘生效。</li>
+                                </ol>
+
+                            </div>
+                        </FormModal>
                     </section>
                 )}
             </div>

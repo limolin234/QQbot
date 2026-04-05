@@ -703,3 +703,9 @@ pre {
     font-size: 14px;
     font-weight: 500;
 }
+.schedule-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+}
