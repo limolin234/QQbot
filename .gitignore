@@ -1,9 +1,29 @@
 .vscode
+.idea/
 .claude
 .codex
+
+# local env and secrets
 .env
+.env.*
+!.env.example
+!deploy/.env.example
+
+# python cache/venv/test artifacts
+.venv/
+venv/
 __pycache__/
 **/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# os/editor noise
+.DS_Store
+Thumbs.db
 
 napcat/
 logs
@@ -13,14 +33,20 @@ plugins
 
 agent_config.yaml
 config.yaml
+deploy/config.yaml
 dida*.json
 
 
 logs/message_handler.log
 message.log
 message.jsonl
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 *.processing
+*.tmp
 
 message copy.jsonl
 today.log
@@ -28,5 +54,22 @@ logs/message_handler.log
 workflows/agent_config.yaml
 TODO.md
 
+node_modules/
+tools/config-studio-web/dist/
+tools/config-studio-web/tsconfig.tsbuildinfo
+tools/config_studio/server/__pycache__/
+.config_studio_snapshots/
+
+# local databases and archives
+*.db
+*.sqlite
+*.sqlite3
 
 qqbot.tar.gz
+
+# Temporary debug and fix scripts
+fix*.py
+fix*.js
+update_*.js
+tmp_*
+test_*.py

@@ -1,0 +1,74 @@
+# Unified Scheduler 配置示例
+#
+# 使用方式：
+# 1) 将下面整个配置段复制到 workflows/agent_config.yaml
+# 2) 按你的群号、用户号和 cron/interval 需求修改
+# 3) 重启 Bot 生效
+
+scheduler_manager:
+  file_name: scheduler_manager.py
+  config:
+    timezone: "Asia/Shanghai"
+    schedules:
+      - name: "morning_greeting"
+        type: "cron"
+        expression: "0 8 * * *"
+        enabled: true
+        steps:
+          - action: "core.send_group_msg"
+            params:
+              group_id: "1231231234"
+              message: "早上好，记得查看今日任务。"
+
+      - name: "push_today_tasks"
+        type: "cron"
+        expression: "5 8 * * *"
+        enabled: false
+        steps:
+          - action: "dida.push_task_list"
+            params:
+              group_id: "1231231234"
+              user_qq: "12345678"
+              day_range: "today"
+              limit: 20
+
+      - name: "daily_summary"
+        type: "cron"
+        expression: "0 22 * * *"
+        enabled: true
+        steps:
+          - action: "summary.daily_report"
+            params:
+              run_mode: "auto"
+              target_type: "private"
+              target_id: "12345678"
+
+      - name: "dida_polling"
+        type: "interval"
+        seconds: 600
+        enabled: true
+        steps:
+          - action: "dida.poll"
+            params:
+              project_ids: []
+
+      - name: "morning_tree_linear"
+        type: "cron"
+        expression: "15 8 * * *"
+        enabled: false
+        steps_tree:
+          - kind: "group"
+            name: "morning_group"
+            children:
+              - kind: "action"
+                action: "core.send_group_msg"
+                params:
+                  group_id: "1231231234"
+                  message: "早间流程启动。"
+              - kind: "action"
+                action: "dida.push_task_list"
+                params:
+                  group_id: "1231231234"
+                  user_qq: "12345678"
+                  day_range: "today"
+                  limit: 20

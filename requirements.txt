@@ -12,6 +12,11 @@ instructor             # 结构化输出增强（用于模糊匹配等）
 python-dotenv         # 环境变量加载
 pyyaml                # YAML 配置解析
 aiocron                 # 定时任务
+fastapi               # Config Studio 本地 API
+uvicorn               # Config Studio 本地服务启动
+paramiko              # 远程推送与重启
+croniter              # 调度时间线预览
+watchfiles            # 文件变更监听
 
 # 可选依赖（如需使用其他 LLM 后端）
 # langchain-anthropic

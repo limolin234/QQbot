@@ -17,11 +17,14 @@ def load_agent_config_by_filename(
     *,
     config_path: str,
 ) -> dict[str, Any]:
-    """按 `file_name` 从 JSON 配置中查找并返回 `config` 字段。"""
+    """按 `file_name` 从 YAML/JSON 配置中查找并返回 `config` 字段。"""
     try:
         with open(config_path, "r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+            if config_path.endswith((".yaml", ".yml")) and yaml is not None:
+                payload = yaml.safe_load(file)
+            else:
+                payload = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, Exception):
         return {}
 
     if not isinstance(payload, dict):

@@ -50,6 +50,19 @@ summary_config:
     # true: 启用（质量更高，会增加 LLM 调用）
     # false: 关闭（走本地去重合并，成本更低）
 
+    # rules：发送目标规则（可配置多个）
+    # 字段：
+    # - enabled: 是否启用该规则
+    # - target_type: 发送目标类型（private/group）
+    # - target_id: 目标 QQ 或群号
+    # - run_mode: 适用模式（all/auto/manual）
+    # 说明：当 summary.daily_report action 里未显式传 target_type/target_id 时，会按此规则发送
+    rules:
+      - enabled: true
+        target_type: private
+        target_id: "12345678"
+        run_mode: all
+
 forward_config:
   file_name: forward.py
   config:
@@ -256,7 +269,7 @@ dida_agent_config:
         action_temperature: 0.0
         reply_temperature: 0.5
 
-dida_scheduler_config:
+dida_config:
   file_name: dida_scheduler.py
   config:
     # 滴答清单/TickTick API 配置
@@ -273,7 +286,62 @@ dida_scheduler_config:
     max_tasks_scan_per_user: 200
     # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
     project_ids: []
-    
-    # admin_qqs: 管理员 QQ 号列表，用于 Scheduler 鉴权
-    admin_qqs:
-      - "12345678"
+
+scheduler_manager:
+  file_name: scheduler_manager.py
+  config:
+    # 统一调度器时区（用于 cron）
+    timezone: "Asia/Shanghai"
+
+    # schedules: 定时任务列表
+    schedules:
+      - name: "morning_greeting"
+        type: "cron"
+        expression: "0 8 * * *"
+        enabled: true
+        steps:
+          - action: "core.send_group_msg"
+            params:
+              group_id: "1231231234"
+              message: "早上好，记得查看今天的安排。"
+
+      - name: "daily_summary"
+        type: "cron"
+        expression: "0 22 * * *"
+        enabled: true
+        steps:
+          - action: "summary.daily_report"
+            params:
+              run_mode: "auto"
+              target_type: "private"
+              target_id: "12345678"
+
+      - name: "dida_polling"
+        type: "interval"
+        seconds: 600
+        enabled: true
+        steps:
+          - action: "dida.poll"
+            params:
+              project_ids: []
+
+      - name: "morning_workflow_tree"
+        type: "cron"
+        expression: "10 8 * * *"
+        enabled: false
+        steps_tree:
+          - kind: "group"
+            name: "morning_bundle"
+            children:
+              - kind: "action"
+                action: "core.send_group_msg"
+                params:
+                  group_id: "1231231234"
+                  message: "开始执行早间流程。"
+              - kind: "action"
+                action: "dida.push_task_list"
+                params:
+                  group_id: "1231231234"
+                  user_qq: "12345678"
+                  day_range: "today"
+                  limit: 20
