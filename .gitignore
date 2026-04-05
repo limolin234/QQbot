@@ -66,3 +66,10 @@ tools/config_studio/server/__pycache__/
 *.sqlite3
 
 qqbot.tar.gz
+
+# Temporary debug and fix scripts
+fix*.py
+fix*.js
+update_*.js
+tmp_*
+test_*.py
