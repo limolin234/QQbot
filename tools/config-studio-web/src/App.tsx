@@ -193,8 +193,6 @@ const ACTION_SCHEMAS: ActionSchema[] = [
         label: '每日总结',
         fields: [
             enumField('run_mode', '运行模式', ACTION_PARAM_ENUMS.summaryRunMode, 'auto'),
-            enumField('target_type', '目标类型', ACTION_PARAM_ENUMS.summaryTargetType, 'private'),
-            stringField('target_id', '目标号（群号/QQ）', ''),
         ],
     },
     {
@@ -1904,15 +1902,15 @@ export default function App() {
 
     const updateDidaAgentConfig = (cfg: DidaConfig) => {
         const next = cloneAgent(agent);
+        // 更新 dida_agent_config (dida_agent.py)
         next.dida_agent_config = {
             file_name: fixedSections.dida_agent_config.file_name,
             config: buildDidaAgentPersistedConfig(cfg as unknown as JsonObject),
         };
-        const didaConfigCurrent = asObject(fixedSections.dida_config.config);
+        // 同步更新 dida_config (dida_scheduler.py)，共享 OAuth 基础参数
         next.dida_config = {
             file_name: fixedSections.dida_config.file_name,
             config: {
-                ...didaConfigCurrent,
                 client_id: cfg.client_id,
                 client_secret: cfg.client_secret,
                 redirect_uri: cfg.redirect_uri,
@@ -2023,28 +2021,34 @@ export default function App() {
                     config: fixedSections[fixedKey].config,
                 };
             }
+
+            // 特殊处理 dida：合并 dida_config 和 dida_agent_config 的冗余字段至 dida_config
             const didaAgentCfg = asObject(asObject(payload.dida_agent_config).config);
             const didaCfg = asObject(asObject(payload.dida_config).config);
+
+            const mergedDidaCfg = {
+                ...didaCfg,
+                client_id: toStringValue(didaCfg.client_id, toStringValue(didaAgentCfg.client_id, '')),
+                client_secret: toStringValue(didaCfg.client_secret, toStringValue(didaAgentCfg.client_secret, '')),
+                redirect_uri: toStringValue(didaCfg.redirect_uri, toStringValue(didaAgentCfg.redirect_uri, '')),
+                due_window_seconds: toNumber(didaCfg.due_window_seconds, toNumber(didaAgentCfg.due_window_seconds, 60)),
+                max_tasks_scan_per_user: toNumber(didaCfg.max_tasks_scan_per_user, toNumber(didaAgentCfg.max_tasks_scan_per_user, 200)),
+                project_ids: (() => {
+                    const fromConfig = toStringArray(didaCfg.project_ids);
+                    if (fromConfig.length > 0) return fromConfig;
+                    return toStringArray(didaAgentCfg.project_ids);
+                })(),
+            };
+
             payload.dida_agent_config = {
                 file_name: toStringValue(asObject(payload.dida_agent_config).file_name, fixedSections.dida_agent_config.file_name),
                 config: buildDidaAgentPersistedConfig(didaAgentCfg),
             };
             payload.dida_config = {
                 file_name: toStringValue(asObject(payload.dida_config).file_name, fixedSections.dida_config.file_name),
-                config: {
-                    ...didaCfg,
-                    client_id: toStringValue(didaCfg.client_id, toStringValue(didaAgentCfg.client_id, '')),
-                    client_secret: toStringValue(didaCfg.client_secret, toStringValue(didaAgentCfg.client_secret, '')),
-                    redirect_uri: toStringValue(didaCfg.redirect_uri, toStringValue(didaAgentCfg.redirect_uri, '')),
-                    due_window_seconds: toNumber(didaCfg.due_window_seconds, toNumber(didaAgentCfg.due_window_seconds, 60)),
-                    max_tasks_scan_per_user: toNumber(didaCfg.max_tasks_scan_per_user, toNumber(didaAgentCfg.max_tasks_scan_per_user, 200)),
-                    project_ids: (() => {
-                        const fromConfig = toStringArray(didaCfg.project_ids);
-                        if (fromConfig.length > 0) return fromConfig;
-                        return toStringArray(didaAgentCfg.project_ids);
-                    })(),
-                },
+                config: mergedDidaCfg,
             };
+
             delete payload.dida_scheduler_config;
             await saveAgent(payload as Record<string, unknown>);
             setStatus('saved');
