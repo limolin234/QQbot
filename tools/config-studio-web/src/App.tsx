@@ -1011,6 +1011,7 @@ function AutoReplyRulesEditor({
                                 <option value="keyword">关键词触发</option>
                                 <option value="at_bot">@机器人触发</option>
                                 <option value="ai_decide">AI 决策触发</option>
+                                <option value="at_bot || ai_decide">@机器人或 AI 决策触发</option>
                                 <option value="ai_decide || keyword">AI 决策或关键词触发</option>
                                 <option value="at_bot || keyword">@机器人或关键词触发</option>
                             </select>
@@ -1156,6 +1157,10 @@ function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (ne
                                 <option value="ai_decide">AI 决策触发</option>
                                 <option value="always">始终触发</option>
                                 <option value="keyword">关键词触发</option>
+                                <option value="at_bot">@机器人触发</option>
+                                <option value="at_bot || ai_decide">@机器人或 AI 决策触发</option>
+                                <option value="ai_decide || keyword">AI 决策或关键词触发</option>
+                                <option value="at_bot || keyword">@机器人或关键词触发</option>
                             </select>
                         </div>
                         <div>
