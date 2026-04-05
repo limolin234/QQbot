@@ -226,12 +226,19 @@ const AUTO_TRIGGER_MODE_LABELS: Record<string, string> = {
     ai_decide: 'AI 决策触发',
     'ai_decide || keyword': 'AI 决策或关键词触发',
     'at_bot || keyword': '@机器人或关键词触发',
+    'at_bot || ai_decide': '@机器人或 AI 决策触发',
+    'at_bot || ai_decide || keyword': '@机器人、AI 决策或关键词触发',
 };
 
 const DIDA_TRIGGER_MODE_LABELS: Record<string, string> = {
     ai_decide: 'AI 决策触发',
     always: '始终触发',
     keyword: '关键词触发',
+    at_bot: '@机器人触发',
+    'ai_decide || keyword': 'AI 决策或关键词触发',
+    'at_bot || keyword': '@机器人或关键词触发',
+    'at_bot || ai_decide': '@机器人或 AI 决策触发',
+    'at_bot || ai_decide || keyword': '@机器人、AI 决策或关键词触发',
 };
 
 type FixedSection = {
