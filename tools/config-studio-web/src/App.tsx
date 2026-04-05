@@ -21,7 +21,7 @@ import type {
     TimelineEvent
 } from './types';
 
-type FixedAgentKey = 'summary_config' | 'forward_config' | 'auto_reply_config' | 'dida_agent_config';
+type FixedAgentKey = 'summary_config' | 'forward_config' | 'auto_reply_config' | 'dida_agent_config' | 'dida_config';
 
 type AutoReplyRule = {
     enabled: boolean;
@@ -98,6 +98,16 @@ type DidaConfig = {
     bypass_cooldown_when_at_bot: boolean;
     pending_max_messages: number;
     rules: DidaRule[];
+};
+
+type DidaSchedulerConfig = {
+    client_id: string;
+    client_secret: string;
+    redirect_uri: string;
+    poll_interval_seconds: number;
+    due_window_seconds: number;
+    max_tasks_scan_per_user: number;
+    project_ids: string[];
 };
 
 type SchedulerManagerConfig = {
@@ -182,6 +192,7 @@ const FIXED_AGENT_OPTIONS: Array<{ key: FixedAgentKey; label: string }> = [
     { key: 'forward_config', label: '转发 Agent' },
     { key: 'auto_reply_config', label: '自动回复 Agent' },
     { key: 'dida_agent_config', label: '滴答 Agent' },
+    { key: 'dida_config', label: '滴答轮询配置' },
 ];
 
 function asObject(value: JsonValue | undefined): JsonObject {
@@ -407,13 +418,31 @@ function defaultSections(): Record<FixedAgentKey, FixedSection> {
                 rules: [makeDefaultDidaRule()],
             },
         },
+        dida_config: {
+            file_name: 'dida_scheduler.py',
+            config: {
+                client_id: '',
+                client_secret: '',
+                redirect_uri: '',
+                poll_interval_seconds: 600,
+                due_window_seconds: 60,
+                max_tasks_scan_per_user: 200,
+                project_ids: [],
+            },
+        },
     };
 }
 
 function normalizeFixedSections(agent: AgentConfigRoot): Record<FixedAgentKey, FixedSection> {
     const defaults = defaultSections();
     for (const key of FIXED_AGENT_OPTIONS.map((x) => x.key)) {
-        const rawSection = asObject(agent[key]);
+        let rawSection = asObject(agent[key]);
+        if (key === 'dida_config') {
+            const legacy = asObject(agent.dida_scheduler_config);
+            if (Object.keys(rawSection).length === 0 && Object.keys(legacy).length > 0) {
+                rawSection = legacy;
+            }
+        }
         const fileName = toStringValue(rawSection.file_name, defaults[key].file_name);
         const cfg = asObject(rawSection.config);
         defaults[key] = {
@@ -1172,6 +1201,90 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
     );
 }
 
+function DidaSchedulerForm({
+    value,
+    onChange,
+}: {
+    value: DidaSchedulerConfig;
+    onChange: (next: DidaSchedulerConfig) => void;
+}) {
+    const [openBasicModal, setOpenBasicModal] = useState(false);
+
+    return (
+        <div>
+            <div className="config-summary-card">
+                <div className="row between wrap gap-8">
+                    <strong>基础参数</strong>
+                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                </div>
+                <div className="rule-preview">
+                    poll_interval: {value.poll_interval_seconds}s | due_window: {value.due_window_seconds}s | max_scan: {value.max_tasks_scan_per_user}
+                </div>
+                <div className="rule-preview">
+                    project_ids 数量：{value.project_ids.length}（为空表示自动发现所有项目）
+                </div>
+                <div className="muted top-gap">
+                    说明：admin_qqs 与 dida_agent_config 重叠，统一以 dida_agent_config 为准，这里不再配置。
+                </div>
+            </div>
+
+            <FormModal open={openBasicModal} title="滴答轮询配置" onClose={() => setOpenBasicModal(false)}>
+                <div className="grid2">
+                    <div>
+                        <label>client_id</label>
+                        <input value={value.client_id} onChange={(e) => onChange({ ...value, client_id: e.target.value })} />
+                    </div>
+                    <div>
+                        <label>client_secret</label>
+                        <input
+                            value={value.client_secret}
+                            onChange={(e) => onChange({ ...value, client_secret: e.target.value })}
+                        />
+                    </div>
+                    <div className="full-row">
+                        <label>redirect_uri</label>
+                        <input
+                            value={value.redirect_uri}
+                            onChange={(e) => onChange({ ...value, redirect_uri: e.target.value })}
+                        />
+                    </div>
+                    <div>
+                        <label>poll_interval_seconds</label>
+                        <input
+                            type="number"
+                            value={value.poll_interval_seconds}
+                            onChange={(e) => onChange({ ...value, poll_interval_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>due_window_seconds</label>
+                        <input
+                            type="number"
+                            value={value.due_window_seconds}
+                            onChange={(e) => onChange({ ...value, due_window_seconds: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>max_tasks_scan_per_user</label>
+                        <input
+                            type="number"
+                            value={value.max_tasks_scan_per_user}
+                            onChange={(e) => onChange({ ...value, max_tasks_scan_per_user: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div className="full-row">
+                        <label>project_ids</label>
+                        <StringListEditor
+                            values={value.project_ids}
+                            onChange={(project_ids) => onChange({ ...value, project_ids })}
+                        />
+                    </div>
+                </div>
+            </FormModal>
+        </div>
+    );
+}
+
 function ActionParamsEditor({
     action,
     params,
@@ -1634,6 +1747,7 @@ export default function App() {
                     config: fixedSections[fixedKey].config,
                 };
             }
+            delete payload.dida_scheduler_config;
             await saveAgent(payload as Record<string, unknown>);
             setStatus('saved');
         } catch (e) {
@@ -1811,6 +1925,16 @@ export default function App() {
         rules: didaRules.length > 0 ? didaRules : [makeDefaultDidaRule()],
     };
 
+    const didaSchedulerConfig: DidaSchedulerConfig = {
+        client_id: toStringValue(fixedSections.dida_config.config.client_id),
+        client_secret: toStringValue(fixedSections.dida_config.config.client_secret),
+        redirect_uri: toStringValue(fixedSections.dida_config.config.redirect_uri),
+        poll_interval_seconds: toNumber(fixedSections.dida_config.config.poll_interval_seconds, 600),
+        due_window_seconds: toNumber(fixedSections.dida_config.config.due_window_seconds, 60),
+        max_tasks_scan_per_user: toNumber(fixedSections.dida_config.config.max_tasks_scan_per_user, 200),
+        project_ids: toStringArray(fixedSections.dida_config.config.project_ids),
+    };
+
     const selectedSchedule = schedulerConfig.schedules[selectedScheduleIndex];
 
     return (
@@ -1897,6 +2021,13 @@ export default function App() {
                         <DidaForm
                             value={didaConfig}
                             onChange={(next) => updateFixedSectionConfig('dida_agent_config', next as unknown as JsonObject)}
+                        />
+                    )}
+
+                    {selectedAgent === 'dida_config' && (
+                        <DidaSchedulerForm
+                            value={didaSchedulerConfig}
+                            onChange={(next) => updateFixedSectionConfig('dida_config', next as unknown as JsonObject)}
                         />
                     )}
                 </section>

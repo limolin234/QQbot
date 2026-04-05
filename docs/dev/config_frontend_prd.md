@@ -81,7 +81,7 @@
 - 不破坏 .env 其他未编辑键值
 
 ### FR-3 Agent 配置编辑（agent_config.yaml）
-- 按配置段展示：summary_config、forward_config、auto_reply_config、dida_agent_config、dida_scheduler_config、scheduler_manager
+- 按配置段展示：summary_config、forward_config、auto_reply_config、dida_agent_config、dida_config、scheduler_manager
 - 每段提供：启用开关、字段表单、高级模式（原始 YAML 编辑，仅兜底）
 - 表单变更实时同步 YAML；高级模式提交时做 schema 校验
 
@@ -335,7 +335,7 @@
 - P0-1：文件初始化兜底
   - 在示例文件缺失时，后端自动写入内置默认模板
 - P0-2：Agent 配置表单化
-  - summary_config、forward_config、auto_reply_config、dida_agent_config、dida_scheduler_config、scheduler_manager 全部改为字段表单
+  - summary_config、forward_config、auto_reply_config、dida_agent_config、dida_config、scheduler_manager 全部改为字段表单
   - 当前 Section JSON 文本编辑降级为高级模式
 - P0-3：Scheduler 参数表单化
   - action 参数按 action_id 渲染专属表单（如 core.send_group_msg、dida.push_task_list）

@@ -256,7 +256,7 @@ dida_agent_config:
         action_temperature: 0.0
         reply_temperature: 0.5
 
-dida_scheduler_config:
+dida_config:
   file_name: dida_scheduler.py
   config:
     # 滴答清单/TickTick API 配置
@@ -273,10 +273,6 @@ dida_scheduler_config:
     max_tasks_scan_per_user: 200
     # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
     project_ids: []
-    
-    # admin_qqs: 管理员 QQ 号列表，用于 Scheduler 鉴权
-    admin_qqs:
-      - "12345678"
 
 scheduler_manager:
   file_name: scheduler_manager.py

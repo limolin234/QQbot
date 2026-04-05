@@ -8,7 +8,11 @@ from typing import Any
 from ncatbot.core import GroupMessage, PrivateMessage
 
 from bot import bot
-from ..agent_config_loader import load_current_agent_config, is_scheduler_enabled
+from ..agent_config_loader import (
+    is_scheduler_enabled,
+    load_agent_config_by_filename,
+    load_current_agent_config,
+)
 from .dida_service import DidaService
 from ..scheduler.registry import action_registry
 
@@ -87,6 +91,19 @@ class DidaScheduler:
     def _load_config(self) -> dict[str, Any]:
         return load_current_agent_config(__file__)
 
+    def _load_dida_agent_config(self) -> dict[str, Any]:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(base_dir, "agent_config.yaml")
+        return load_agent_config_by_filename("dida_agent.py", config_path=config_path)
+
+    @staticmethod
+    def _normalize_qq_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [x.strip() for x in value.split(",") if x.strip()]
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+        return []
+
     def _get_service(self) -> DidaService | None:
         config = self._load_config()
         client_id = str(config.get("client_id") or "").strip()
@@ -98,20 +115,16 @@ class DidaScheduler:
 
     def _get_runtime_config(self) -> dict[str, Any]:
         config = self._load_config()
+        dida_agent_config = self._load_dida_agent_config()
         poll_interval_seconds = int(config.get("poll_interval_seconds", 60))
         due_window_seconds = int(config.get("due_window_seconds", 60))
         max_tasks_scan = int(config.get("max_tasks_scan_per_user", 200))
         project_ids = config.get("project_ids")
         if not isinstance(project_ids, list):
             project_ids = []
-            
-        admin_qqs_raw = config.get("admin_qqs", [])
-        if isinstance(admin_qqs_raw, str):
-            admin_qqs = [x.strip() for x in admin_qqs_raw.split(",") if x.strip()]
-        elif isinstance(admin_qqs_raw, list):
-            admin_qqs = [str(x).strip() for x in admin_qqs_raw if str(x).strip()]
-        else:
-            admin_qqs = []
+        admin_qqs = self._normalize_qq_list(dida_agent_config.get("admin_qqs", []))
+        if not admin_qqs:
+            admin_qqs = self._normalize_qq_list(config.get("admin_qqs", []))
             
         return {
             "poll_interval_seconds": max(poll_interval_seconds, 5),

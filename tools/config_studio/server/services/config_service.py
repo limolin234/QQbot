@@ -60,7 +60,7 @@ DEFAULT_AGENT_TEMPLATE: dict[str, Any] = {
             "rules": [],
         },
     },
-    "dida_scheduler_config": {
+    "dida_config": {
         "file_name": "dida_scheduler.py",
         "config": {
             "client_id": "",
@@ -70,7 +70,6 @@ DEFAULT_AGENT_TEMPLATE: dict[str, Any] = {
             "due_window_seconds": 60,
             "max_tasks_scan_per_user": 200,
             "project_ids": [],
-            "admin_qqs": [],
         },
     },
     "scheduler_manager": {
