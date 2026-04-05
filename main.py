@@ -3,7 +3,7 @@ from agent_pool import setup_agent_pool
 from workflows.agent_config_loader import check_config
 from bot import bot
 from workflows import message_observe, agent_observe
-from workflows import summary, auto_reply, forward, dida, reminder, volunteer_monitor
+from workflows import summary, auto_reply, forward, dida, reminder, volunteer_monitor, badminton_monitor
 from workflows.router import route_private
 from workflows.volunteer_monitor_scheduler import _get_config as _get_volunteer_config
 
@@ -22,10 +22,12 @@ async def on_private_message(msg: PrivateMessage):
         msg,
         admin_qq=_get_admin_qq(),
         volunteer_monitor_enabled=check_config("volunteer_monitor_config", "./workflows"),
+        badminton_monitor_enabled=check_config("badminton_monitor_scheduler_config", "./workflows"),
         dida_enabled=check_config("dida_agent_config", "./workflows"),
         reminder_enabled=check_config("reminder_config", "./workflows"),
         auto_reply_fn=lambda m: auto_reply.entrance(m, chat_type="private"),
         volunteer_monitor_fn=volunteer_monitor.private_entrance,
+        badminton_monitor_fn=badminton_monitor.private_entrance,
         dida_fn=dida.private_entrance,
         reminder_fn=reminder.private_entrance,
     )
@@ -44,6 +46,8 @@ async def on_group_message(msg: GroupMessage):
         await reminder.group_entrance(msg)
     if check_config("volunteer_monitor_config", "./workflows"):
         await volunteer_monitor.group_entrance(msg)
+    if check_config("badminton_monitor_scheduler_config", "./workflows"):
+        await badminton_monitor.group_entrance(msg)
 
 
 @bot.startup_event()  # type: ignore
@@ -61,5 +65,7 @@ async def on_startup(*args):
         await reminder.start_up()
     if check_config("volunteer_monitor_config", "./workflows"):
         await volunteer_monitor.start_up()
+    if check_config("badminton_monitor_scheduler_config", "./workflows"):
+        badminton_monitor.start_up()
 
 bot.run()

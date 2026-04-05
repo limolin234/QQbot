@@ -267,3 +267,23 @@ dida_scheduler_config:
     # admin_qqs: 管理员 QQ 号列表，用于 Scheduler 鉴权
     admin_qqs:
       - "12345678"
+
+badminton_monitor_scheduler_config:
+  file_name: badminton_monitor_scheduler.py
+  config:
+    # 监控的羽毛球群列表
+    monitor_groups:
+      - "982429245"
+      - "1075786046"
+    # 管理员 QQ 号（用于接收通知和配置指令）
+    admin_qq: "12345678"
+    # AI 模型
+    model: qwen3-max-2026-01-23
+    # 默认接龙名字
+    default_name: "龚海心"
+    # 默认接龙人数
+    default_count: 1
+    # 监控关键词（出现这些词才会触发 AI 解析）
+    keywords:
+      - "捞"
+      - "接龙"
