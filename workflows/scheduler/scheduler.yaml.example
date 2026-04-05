@@ -40,6 +40,8 @@ scheduler_manager:
           - action: "summary.daily_report"
             params:
               run_mode: "auto"
+              target_type: "private"
+              target_id: "12345678"
 
       - name: "dida_polling"
         type: "interval"

@@ -47,6 +47,13 @@ type DidaRule = {
     reply_temperature: number;
 };
 
+type SummaryRule = {
+    enabled: boolean;
+    target_type: 'private' | 'group';
+    target_id: string;
+    run_mode: 'all' | 'auto' | 'manual';
+};
+
 type SummaryConfig = {
     model: string;
     temperature: number;
@@ -58,6 +65,7 @@ type SummaryConfig = {
     summary_global_overview: boolean;
     summary_send_mode: 'single_message' | 'multi_message';
     summary_group_reduce_enabled: boolean;
+    rules: SummaryRule[];
 };
 
 type ForwardConfig = {
@@ -139,6 +147,10 @@ const ACTION_PARAM_ENUMS = {
         { value: 'auto', label: 'auto（当天汇总）' },
         { value: 'manual', label: 'manual（增量汇总）' },
     ] as ActionFieldOption[],
+    summaryTargetType: [
+        { value: 'private', label: 'private（私聊）' },
+        { value: 'group', label: 'group（群聊）' },
+    ] as ActionFieldOption[],
     didaDayRange: [
         { value: 'today', label: 'today（今天+已过期）' },
         { value: 'overdue', label: 'overdue（仅已过期）' },
@@ -183,7 +195,11 @@ const ACTION_SCHEMAS: ActionSchema[] = [
     {
         action: 'summary.daily_report',
         label: '每日总结',
-        fields: [enumField('run_mode', '运行模式', ACTION_PARAM_ENUMS.summaryRunMode, 'auto')],
+        fields: [
+            enumField('run_mode', '运行模式', ACTION_PARAM_ENUMS.summaryRunMode, 'auto'),
+            enumField('target_type', '目标类型', ACTION_PARAM_ENUMS.summaryTargetType, 'private'),
+            stringField('target_id', '目标号（群号/QQ）', ''),
+        ],
     },
     {
         action: 'dida.poll',
@@ -422,6 +438,15 @@ function makeDefaultDidaRule(): DidaRule {
     };
 }
 
+function makeDefaultSummaryRule(): SummaryRule {
+    return {
+        enabled: true,
+        target_type: 'private',
+        target_id: '',
+        run_mode: 'all',
+    };
+}
+
 function defaultSections(): Record<FixedAgentKey, FixedSection> {
     return {
         summary_config: {
@@ -437,6 +462,7 @@ function defaultSections(): Record<FixedAgentKey, FixedSection> {
                 summary_global_overview: true,
                 summary_send_mode: 'multi_message',
                 summary_group_reduce_enabled: true,
+                rules: [makeDefaultSummaryRule()],
             },
         },
         forward_config: {
@@ -607,96 +633,217 @@ function FormModal({
     );
 }
 
-function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (next: SummaryConfig) => void }) {
+function SummaryRulesEditor({
+    rules,
+    onChange,
+}: {
+    rules: SummaryRule[];
+    onChange: (next: SummaryRule[]) => void;
+}) {
+    const [editingIdx, setEditingIdx] = useState<number | null>(null);
+
+    const updateRule = (idx: number, patch: Partial<SummaryRule>) => {
+        const next = [...rules];
+        next[idx] = { ...next[idx], ...patch };
+        onChange(next);
+    };
+
+    const editingRule = editingIdx !== null ? rules[editingIdx] : null;
+
     return (
-        <div className="grid2">
-            <div>
-                <label>model</label>
-                <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+        <div className="rule-box">
+            {rules.map((rule, idx) => (
+                <div key={idx} className="rule-item">
+                    <div className="row between">
+                        <strong>规则 {idx + 1}</strong>
+                        <div className="row gap-8">
+                            <SwitchField checked={rule.enabled} onChange={(enabled) => updateRule(idx, { enabled })} label="启用规则" />
+                            <button onClick={() => setEditingIdx(idx)}>编辑规则</button>
+                            <button
+                                onClick={() => {
+                                    const next = [...rules];
+                                    next.splice(idx, 1);
+                                    onChange(next);
+                                }}
+                            >
+                                删除规则
+                            </button>
+                        </div>
+                    </div>
+                    <div className="rule-preview">
+                        {rule.target_type} | {rule.target_id || '未填写目标号'} | mode={rule.run_mode}
+                    </div>
+                </div>
+            ))}
+            <button onClick={() => onChange([...rules, makeDefaultSummaryRule()])}>+ 添加规则</button>
+
+            <FormModal
+                open={editingRule !== null}
+                title={editingIdx !== null ? `规则 ${editingIdx + 1} 配置` : '规则配置'}
+                onClose={() => setEditingIdx(null)}
+            >
+                {editingRule ? (
+                    <div className="grid2">
+                        <SwitchField
+                            checked={editingRule.enabled}
+                            onChange={(enabled) => editingIdx !== null && updateRule(editingIdx, { enabled })}
+                            label="启用规则"
+                        />
+                        <div>
+                            <label>target_type</label>
+                            <select
+                                value={editingRule.target_type}
+                                onChange={(e) =>
+                                    editingIdx !== null && updateRule(editingIdx, { target_type: e.target.value as 'private' | 'group' })
+                                }
+                            >
+                                <option value="private">private（私聊）</option>
+                                <option value="group">group（群聊）</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>target_id（群号/QQ）</label>
+                            <input
+                                value={editingRule.target_id}
+                                onChange={(e) => editingIdx !== null && updateRule(editingIdx, { target_id: e.target.value })}
+                            />
+                        </div>
+                        <div>
+                            <label>run_mode</label>
+                            <select
+                                value={editingRule.run_mode}
+                                onChange={(e) =>
+                                    editingIdx !== null && updateRule(editingIdx, { run_mode: e.target.value as 'all' | 'auto' | 'manual' })
+                                }
+                            >
+                                <option value="all">all（全部）</option>
+                                <option value="auto">auto（仅自动）</option>
+                                <option value="manual">manual（仅手动）</option>
+                            </select>
+                        </div>
+                    </div>
+                ) : (
+                    <div />
+                )}
+            </FormModal>
+        </div>
+    );
+}
+
+function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (next: SummaryConfig) => void }) {
+    const [openBasicModal, setOpenBasicModal] = useState(false);
+
+    return (
+        <div>
+            <div className="config-summary-card">
+                <div className="row between wrap gap-8">
+                    <strong>基础参数</strong>
+                    <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
+                </div>
+                <div className="rule-preview">
+                    模型：{value.model || '未设置'} | 温度：{value.temperature} | send_mode：{value.summary_send_mode}
+                </div>
+                <div className="rule-preview">
+                    scope：{value.summary_chat_scope} | filter：{value.summary_group_filter_mode} | 规则数：{value.rules.length}
+                </div>
             </div>
-            <div>
-                <label>temperature</label>
-                <input
-                    type="number"
-                    step="0.1"
-                    value={value.temperature}
-                    onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
-                />
+
+            <FormModal open={openBasicModal} title="总结 Agent 基础参数" onClose={() => setOpenBasicModal(false)}>
+                <div className="grid2">
+                    <div>
+                        <label>model</label>
+                        <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} />
+                    </div>
+                    <div>
+                        <label>temperature</label>
+                        <input
+                            type="number"
+                            step="0.1"
+                            value={value.temperature}
+                            onChange={(e) => onChange({ ...value, temperature: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>max_line_chars</label>
+                        <input
+                            type="number"
+                            value={value.max_line_chars}
+                            onChange={(e) => onChange({ ...value, max_line_chars: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>max_lines</label>
+                        <input
+                            type="number"
+                            value={value.max_lines}
+                            onChange={(e) => onChange({ ...value, max_lines: Number(e.target.value) })}
+                        />
+                    </div>
+                    <div>
+                        <label>summary_chat_scope</label>
+                        <select
+                            value={value.summary_chat_scope}
+                            onChange={(e) =>
+                                onChange({ ...value, summary_chat_scope: e.target.value as SummaryConfig['summary_chat_scope'] })
+                            }
+                        >
+                            <option value="group">group</option>
+                            <option value="private">private</option>
+                            <option value="all">all</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>summary_group_filter_mode</label>
+                        <select
+                            value={value.summary_group_filter_mode}
+                            onChange={(e) =>
+                                onChange({
+                                    ...value,
+                                    summary_group_filter_mode: e.target.value as SummaryConfig['summary_group_filter_mode'],
+                                })
+                            }
+                        >
+                            <option value="all">all</option>
+                            <option value="include">include</option>
+                            <option value="exclude">exclude</option>
+                        </select>
+                    </div>
+                    <div className="full-row">
+                        <label>summary_group_ids</label>
+                        <StringListEditor
+                            values={value.summary_group_ids}
+                            onChange={(summary_group_ids) => onChange({ ...value, summary_group_ids })}
+                        />
+                    </div>
+                    <SwitchField
+                        checked={value.summary_global_overview}
+                        onChange={(summary_global_overview) => onChange({ ...value, summary_global_overview })}
+                        label="summary_global_overview"
+                    />
+                    <div>
+                        <label>summary_send_mode</label>
+                        <select
+                            value={value.summary_send_mode}
+                            onChange={(e) =>
+                                onChange({ ...value, summary_send_mode: e.target.value as SummaryConfig['summary_send_mode'] })
+                            }
+                        >
+                            <option value="single_message">single_message</option>
+                            <option value="multi_message">multi_message</option>
+                        </select>
+                    </div>
+                    <SwitchField
+                        checked={value.summary_group_reduce_enabled}
+                        onChange={(summary_group_reduce_enabled) => onChange({ ...value, summary_group_reduce_enabled })}
+                        label="summary_group_reduce_enabled"
+                    />
+                </div>
+            </FormModal>
+
+            <div className="top-gap">
+                <label>规则列表</label>
+                <SummaryRulesEditor rules={value.rules} onChange={(rules) => onChange({ ...value, rules })} />
             </div>
-            <div>
-                <label>max_line_chars</label>
-                <input
-                    type="number"
-                    value={value.max_line_chars}
-                    onChange={(e) => onChange({ ...value, max_line_chars: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>max_lines</label>
-                <input
-                    type="number"
-                    value={value.max_lines}
-                    onChange={(e) => onChange({ ...value, max_lines: Number(e.target.value) })}
-                />
-            </div>
-            <div>
-                <label>summary_chat_scope</label>
-                <select
-                    value={value.summary_chat_scope}
-                    onChange={(e) =>
-                        onChange({ ...value, summary_chat_scope: e.target.value as SummaryConfig['summary_chat_scope'] })
-                    }
-                >
-                    <option value="group">group</option>
-                    <option value="private">private</option>
-                    <option value="all">all</option>
-                </select>
-            </div>
-            <div>
-                <label>summary_group_filter_mode</label>
-                <select
-                    value={value.summary_group_filter_mode}
-                    onChange={(e) =>
-                        onChange({
-                            ...value,
-                            summary_group_filter_mode: e.target.value as SummaryConfig['summary_group_filter_mode'],
-                        })
-                    }
-                >
-                    <option value="all">all</option>
-                    <option value="include">include</option>
-                    <option value="exclude">exclude</option>
-                </select>
-            </div>
-            <div className="full-row">
-                <label>summary_group_ids</label>
-                <StringListEditor
-                    values={value.summary_group_ids}
-                    onChange={(summary_group_ids) => onChange({ ...value, summary_group_ids })}
-                />
-            </div>
-            <SwitchField
-                checked={value.summary_global_overview}
-                onChange={(summary_global_overview) => onChange({ ...value, summary_global_overview })}
-                label="summary_global_overview"
-            />
-            <div>
-                <label>summary_send_mode</label>
-                <select
-                    value={value.summary_send_mode}
-                    onChange={(e) =>
-                        onChange({ ...value, summary_send_mode: e.target.value as SummaryConfig['summary_send_mode'] })
-                    }
-                >
-                    <option value="single_message">single_message</option>
-                    <option value="multi_message">multi_message</option>
-                </select>
-            </div>
-            <SwitchField
-                checked={value.summary_group_reduce_enabled}
-                onChange={(summary_group_reduce_enabled) => onChange({ ...value, summary_group_reduce_enabled })}
-                label="summary_group_reduce_enabled"
-            />
         </div>
     );
 }
@@ -1896,6 +2043,19 @@ export default function App() {
         }
     };
 
+    const summaryRulesRaw = Array.isArray(fixedSections.summary_config.config.rules)
+        ? fixedSections.summary_config.config.rules
+        : [];
+    const summaryRules: SummaryRule[] = summaryRulesRaw.map((item) => {
+        const obj = asObject(item as JsonValue);
+        return {
+            enabled: toBool(obj.enabled, true),
+            target_type: toStringValue(obj.target_type, 'private') as 'private' | 'group',
+            target_id: toStringValue(obj.target_id),
+            run_mode: toStringValue(obj.run_mode, 'all') as 'all' | 'auto' | 'manual',
+        };
+    });
+
     const summaryConfig: SummaryConfig = {
         model: toStringValue(fixedSections.summary_config.config.model),
         temperature: toNumber(fixedSections.summary_config.config.temperature, 0.2),
@@ -1919,6 +2079,7 @@ export default function App() {
             fixedSections.summary_config.config.summary_group_reduce_enabled,
             true,
         ),
+        rules: summaryRules.length > 0 ? summaryRules : [makeDefaultSummaryRule()],
     };
 
     const forwardConfig: ForwardConfig = {

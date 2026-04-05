@@ -23,6 +23,7 @@ DEFAULT_AGENT_TEMPLATE: dict[str, Any] = {
             "summary_global_overview": True,
             "summary_send_mode": "multi_message",
             "summary_group_reduce_enabled": True,
+            "rules": [],
         },
     },
     "forward_config": {

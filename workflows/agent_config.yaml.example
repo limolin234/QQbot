@@ -50,6 +50,19 @@ summary_config:
     # true: 启用（质量更高，会增加 LLM 调用）
     # false: 关闭（走本地去重合并，成本更低）
 
+    # rules：发送目标规则（可配置多个）
+    # 字段：
+    # - enabled: 是否启用该规则
+    # - target_type: 发送目标类型（private/group）
+    # - target_id: 目标 QQ 或群号
+    # - run_mode: 适用模式（all/auto/manual）
+    # 说明：当 summary.daily_report action 里未显式传 target_type/target_id 时，会按此规则发送
+    rules:
+      - enabled: true
+        target_type: private
+        target_id: "12345678"
+        run_mode: all
+
 forward_config:
   file_name: forward.py
   config:
@@ -300,6 +313,8 @@ scheduler_manager:
           - action: "summary.daily_report"
             params:
               run_mode: "auto"
+              target_type: "private"
+              target_id: "12345678"
 
       - name: "dida_polling"
         type: "interval"
