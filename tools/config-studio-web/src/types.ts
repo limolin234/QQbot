@@ -1,4 +1,4 @@
-export type TabKey = 'basic' | 'agent' | 'scheduler' | 'deploy' | 'history';
+export type TabKey = 'basic' | 'agent' | 'scheduler' | 'deploy' | 'history' | 'terminal';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];

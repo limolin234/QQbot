@@ -11,6 +11,7 @@ import {
     saveEnv,
     testConnection
 } from './api';
+import { TerminalPanel } from './TerminalPanel';
 import type {
     AgentConfigRoot,
     JsonObject,
@@ -2303,6 +2304,7 @@ export default function App() {
                         ['scheduler', 'Scheduler设置'],
                         ['deploy', '推送中心'],
                         ['history', '变更历史'],
+                        ['terminal', '控制台'],
                     ].map(([key, label]) => (
                         <button key={key} className={`sidebar-nav-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as TabKey)}>
                             {label}
@@ -2749,6 +2751,12 @@ export default function App() {
 
                             </div>
                         </FormModal>
+                    </section>
+                )}
+
+                {tab === 'terminal' && (
+                    <section className="panel card" style={{ padding: 0 }}>
+                        <TerminalPanel deployConfig={deployForm} />
                     </section>
                 )}
             </div>

@@ -6,11 +6,15 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+import subprocess
+import paramiko
 
 from .models import (
     AgentPatchRequest,
     AgentRawPatchRequest,
     AllConfigResponse,
+    CommandSSHRequest,
     CompileRequest,
     ConnectionResult,
     DeployPullRequest,
@@ -60,6 +64,57 @@ app.add_middleware(
 config_service = ConfigService(REPO_ROOT)
 deploy_service = DeployService(REPO_ROOT)
 
+
+
+@app.get("/api/sys/command")
+def stream_sys_command(cmd: str):
+    def event_stream():
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        for line in iter(process.stdout.readline, ""):
+            yield f"data: {line}\n\n"
+        process.stdout.close()
+        process.wait()
+        yield "event: end\ndata: \n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/sys/command_ssh")
+def stream_sys_command_ssh(req: CommandSSHRequest):
+    def event_stream():
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            if req.auth_type == "password":
+                client.connect(req.host, req.port, req.username, password=req.password, timeout=10)
+            else:
+                client.connect(req.host, req.port, req.username, key_filename=req.key_path, timeout=10)
+        except Exception as e:
+            yield f"SSH Connection Failed: {e}\n"
+            return
+            
+        try:
+            # We use get_pty=True to merge stderr and unbuffer streams for some commands
+            cmd_with_dir = f"cd {req.project_dir} && {req.cmd}" if req.project_dir else req.cmd
+            stdin, stdout, stderr = client.exec_command(cmd_with_dir, get_pty=True)
+            for line in iter(stdout.readline, ""):
+                yield f"{line}"
+            status = stdout.channel.recv_exit_status()
+            yield f"\n[Process exited with status {status}]\n"
+        except Exception as e:
+            yield f"\nCommand Error: {e}\n"
+        finally:
+            client.close()
+
+    return StreamingResponse(event_stream(), media_type="text/plain")
 
 @app.get("/api/health")
 async def health_check() -> dict[str, Any]:

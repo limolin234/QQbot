@@ -59,6 +59,9 @@ class DeployTarget(BaseModel):
     project_dir: str = "/root/qqbot"
 
 
+class CommandSSHRequest(DeployTarget):
+    cmd: str
+
 class DeployPushRequest(DeployTarget):
     push_env: bool = True
     push_agent_yaml: bool = True
