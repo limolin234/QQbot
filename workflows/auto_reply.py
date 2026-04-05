@@ -871,9 +871,11 @@ class AutoReplyDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
-        llm = ChatOpenAI(**llm_kwargs).with_structured_output(AutoReplyAIDecision)
+        llm = ChatOpenAI(**llm_kwargs).with_structured_output(
+            AutoReplyAIDecision, method="function_calling"
+        )
 
         def decide_node(state: AutoReplyAIState) -> AutoReplyAIState:
             llm_input = {
@@ -888,7 +890,9 @@ class AutoReplyDecisionEngine:
             }
             result = llm.invoke(
                 [
-                    SystemMessage(content=state["prompt"]),
+                    SystemMessage(
+                        content=state["prompt"] + "\nPlease output valid JSON."
+                    ),
                     HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
                 ]
             )
@@ -983,17 +987,21 @@ class AutoReplyDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
         llm_base = ChatOpenAI(**llm_kwargs)
         use_raw_fallback = True
         try:
             llm = llm_base.with_structured_output(
-                AutoReplyGeneratedReply, include_raw=True
+                AutoReplyGeneratedReply,
+                include_raw=True,
+                method="function_calling",
             )
         except TypeError:
             use_raw_fallback = False
-            llm = llm_base.with_structured_output(AutoReplyGeneratedReply)
+            llm = llm_base.with_structured_output(
+                AutoReplyGeneratedReply, method="function_calling"
+            )
 
         def generate_node(state: AutoReplyGenerateState) -> AutoReplyGenerateState:
             llm_input = {
@@ -1007,7 +1015,7 @@ class AutoReplyDecisionEngine:
                 "history_messages": state["history_messages"],
             }
             messages = [
-                SystemMessage(content=state["prompt"]),
+                SystemMessage(content=state["prompt"] + "\nPlease output valid JSON."),
                 HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
             ]
             try:

@@ -1058,9 +1058,11 @@ class DidaAgentDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
-        llm = ChatOpenAI(**llm_kwargs).with_structured_output(DidaAgentAIDecision)
+        llm = ChatOpenAI(**llm_kwargs).with_structured_output(
+            DidaAgentAIDecision, method="function_calling"
+        )
 
         def decide_node(state: DidaAgentAIState) -> DidaAgentAIState:
             llm_input = {
@@ -1075,7 +1077,9 @@ class DidaAgentDecisionEngine:
             }
             result = llm.invoke(
                 [
-                    SystemMessage(content=state["prompt"]),
+                    SystemMessage(
+                        content=state["prompt"] + "\nPlease output valid JSON."
+                    ),
                     HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
                 ]
             )
@@ -1230,13 +1234,17 @@ class DidaAgentDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
         llm_base = ChatOpenAI(**llm_kwargs)
-        llm = llm_base.with_structured_output(ActionLLMResult, include_raw=True)
+        llm = llm_base.with_structured_output(
+            ActionLLMResult,
+            include_raw=True,
+            method="function_calling",
+        )
 
         messages = [
-            SystemMessage(content=prompt),
+            SystemMessage(content=prompt + "\nPlease output valid JSON."),
             HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
         ]
 
@@ -1380,18 +1388,24 @@ class DidaAgentDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
         llm_base = ChatOpenAI(**llm_kwargs)
         use_raw_fallback = True
         try:
-            llm = llm_base.with_structured_output(ReplyResponse, include_raw=True)
+            llm = llm_base.with_structured_output(
+                ReplyResponse,
+                include_raw=True,
+                method="function_calling",
+            )
         except TypeError:
             use_raw_fallback = False
-            llm = llm_base.with_structured_output(ReplyResponse)
+            llm = llm_base.with_structured_output(
+                ReplyResponse, method="function_calling"
+            )
 
         messages = [
-            SystemMessage(content=prompt),
+            SystemMessage(content=prompt + "\nPlease output valid JSON."),
             HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
         ]
 
@@ -1567,17 +1581,21 @@ class DidaAgentDecisionEngine:
         if base_url:
             llm_kwargs["openai_api_base"] = base_url
 
-        llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+        llm_kwargs["extra_body"] = {"reasoning_split": True}
 
         llm_base = ChatOpenAI(**llm_kwargs)
         use_raw_fallback = True
         try:
             llm = llm_base.with_structured_output(
-                DidaAgentGeneratedReply, include_raw=True
+                DidaAgentGeneratedReply,
+                include_raw=True,
+                method="function_calling",
             )
         except TypeError:
             use_raw_fallback = False
-            llm = llm_base.with_structured_output(DidaAgentGeneratedReply)
+            llm = llm_base.with_structured_output(
+                DidaAgentGeneratedReply, method="function_calling"
+            )
 
         def generate_node(state: DidaAgentGenerateState) -> DidaAgentGenerateState:
             llm_input = {
@@ -1591,7 +1609,7 @@ class DidaAgentDecisionEngine:
                 "history_messages": state["history_messages"],
             }
             messages = [
-                SystemMessage(content=state["prompt"]),
+                SystemMessage(content=state["prompt"] + "\nPlease output valid JSON."),
                 HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
             ]
             try:

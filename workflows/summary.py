@@ -693,7 +693,7 @@ def run_grouped_summary_graph(
     total_messages = 0
     llm = _build_llm(model_name=model_name, temperature=temperature)
     structured_chunk_reducer = (
-        llm.with_structured_output(ChunkSummarySchema)
+        llm.with_structured_output(ChunkSummarySchema, method="function_calling")
         if DEFAULT_SUMMARY_GROUP_REDUCE_ENABLED
         else None
     )
@@ -858,7 +858,9 @@ def run_grouped_summary_graph(
     global_overview = ""
     if DEFAULT_SUMMARY_GLOBAL_OVERVIEW and group_results:
         try:
-            structured_overview_llm = llm.with_structured_output(GlobalOverviewSchema)
+            structured_overview_llm = llm.with_structured_output(
+                GlobalOverviewSchema, method="function_calling"
+            )
             group_summary_text = "\n\n".join(
                 [
                     "\n".join(
@@ -1291,7 +1293,9 @@ def _build_summary_graph(*, model_name: str | None, temperature: float):
             )
             return {"map_result": empty_result, "llm_calls": state["llm_calls"]}
 
-        structured_llm = llm.with_structured_output(ChunkSummarySchema)
+        structured_llm = llm.with_structured_output(
+            ChunkSummarySchema, method="function_calling"
+        )
         source_refs, source_details, _trace_lines = _analyze_blocks(payload.blocks)
         messages = [
             SystemMessage(content=SYSTEM_SUMMARY_PROMPT),
@@ -1377,7 +1381,7 @@ def _build_llm(*, model_name: str | None, temperature: float) -> ChatOpenAI:
     if base_url:
         llm_kwargs["openai_api_base"] = base_url
 
-    llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+    llm_kwargs["extra_body"] = {"reasoning_split": True}
 
     return ChatOpenAI(**llm_kwargs)
 

@@ -246,9 +246,11 @@ def run_forward_graph(
     if base_url:
         llm_kwargs["openai_api_base"] = base_url
 
-    llm_kwargs["model_kwargs"] = {"extra_body": {"reasoning_split": True}}
+    llm_kwargs["extra_body"] = {"reasoning_split": True}
 
-    llm = ChatOpenAI(**llm_kwargs).with_structured_output(ForwardDecision)
+    llm = ChatOpenAI(**llm_kwargs).with_structured_output(
+        ForwardDecision, method="function_calling"
+    )
     decision_prompt = str(
         FORWARD_AGENT_CONFIG.get("forward_decision_prompt")
         or '你是消息转发判定助手。仅返回 JSON：{"should_forward":true/false,"reason":"..."}'
