@@ -651,9 +651,9 @@ function SummaryRulesEditor({
     const editingRule = editingIdx !== null ? rules[editingIdx] : null;
 
     return (
-        <div className="rule-box">
+        <div className="card-grid">
             {rules.map((rule, idx) => (
-                <div key={idx} className="rule-item">
+                <div key={idx} className="rule-card">
                     <div className="row between">
                         <strong>规则 {idx + 1}</strong>
                         <div className="row gap-8">
@@ -735,7 +735,7 @@ function SummaryForm({ value, onChange }: { value: SummaryConfig; onChange: (nex
 
     return (
         <div>
-            <div className="config-summary-card">
+            <div className="summary-card">
                 <div className="row between wrap gap-8">
                     <strong>基础参数</strong>
                     <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
@@ -910,9 +910,9 @@ function AutoReplyRulesEditor({
     const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
 
     return (
-        <div className="rule-box">
+        <div className="card-grid">
             {rules.map((rule, idx) => (
-                <div key={idx} className="rule-item">
+                <div key={idx} className="rule-card">
                     <div className="row between">
                         <strong>规则 {idx + 1}</strong>
                         <div className="row gap-8">
@@ -1046,9 +1046,9 @@ function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (ne
     const promptRule = editingPromptIdx !== null ? rules[editingPromptIdx] : null;
 
     return (
-        <div className="rule-box">
+        <div className="card-grid">
             {rules.map((rule, idx) => (
-                <div key={idx} className="rule-item">
+                <div key={idx} className="rule-card">
                     <div className="row between">
                         <strong>规则 {idx + 1}</strong>
                         <div className="row gap-8">
@@ -1188,7 +1188,7 @@ function AutoReplyForm({ value, onChange }: { value: AutoReplyConfig; onChange: 
 
     return (
         <div>
-            <div className="config-summary-card">
+            <div className="summary-card">
                 <div className="row between wrap gap-8">
                     <strong>基础参数</strong>
                     <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
@@ -1300,7 +1300,7 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
 
     return (
         <div>
-            <div className="config-summary-card">
+            <div className="summary-card">
                 <div className="row between wrap gap-8">
                     <strong>基础参数</strong>
                     <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
@@ -1426,7 +1426,7 @@ function DidaSchedulerForm({
 
     return (
         <div>
-            <div className="config-summary-card">
+            <div className="summary-card">
                 <div className="row between wrap gap-8">
                     <strong>基础参数</strong>
                     <button onClick={() => setOpenBasicModal(true)}>编辑基础参数</button>
@@ -1654,7 +1654,7 @@ function StepTreeEditor({
     };
 
     return (
-        <div className="rule-box" style={{ marginLeft: depth * 12 }}>
+        <div className="card-grid" style={{ marginLeft: depth * 12 }}>
             {nodes.map((node, idx) => (
                 <div key={node.id || `${node.kind}_${idx}`} className="node">
                     <div className="row between gap-8 wrap">
@@ -2190,502 +2190,505 @@ export default function App() {
 
     return (
         <div className="layout">
-            <header className="topbar">
-                <h1>QQBot Config Studio</h1>
-                <div className="status">状态: {status}</div>
-            </header>
+            <div className="sidebar">
+                <header className="topbar" style={{ background: 'transparent', border: 'none', padding: '0 0 16px', marginBottom: '8px', borderBottom: '1px solid var(--line)', display: 'block', textAlign: 'center' }}>
+                    <h2 style={{ margin: 0, fontSize: '18px' }}>Config Studio</h2>
+                    <div className="status" style={{ fontSize: '12px', marginTop: '4px' }}>状态: {status}</div>
+                </header>
 
-            <nav className="tabs">
-                {[
-                    ['basic', '基础设置'],
-                    ['agent', 'Agent设置'],
-                    ['scheduler', 'Scheduler设置'],
-                    ['deploy', '推送中心'],
-                    ['history', '变更历史'],
-                ].map(([key, label]) => (
-                    <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key as TabKey)}>
-                        {label}
-                    </button>
-                ))}
-            </nav>
+                <nav style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {[
+                        ['basic', '基础设置'],
+                        ['agent', 'Agent设置'],
+                        ['scheduler', 'Scheduler设置'],
+                        ['deploy', '推送中心'],
+                        ['history', '变更历史'],
+                    ].map(([key, label]) => (
+                        <button key={key} className={`sidebar-nav-item ${tab === key ? 'active' : ''}`} onClick={() => setTab(key as TabKey)}>
+                            {label}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+            <div className="main-content">
 
-            {error && (
-                <div className="error">
-                    {error}
-                    <div className="hint">若显示 Failed to fetch，请确认后端 API 已在 8787 端口启动，或前端代理是否可访问。</div>
-                </div>
-            )}
-
-            {tab === 'basic' && (
-                <section className="panel">
-                    <h2>基础设置 (.env)</h2>
-                    <label>LLM_API_KEY</label>
-                    <input value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)} />
-                    <label>LLM_API_BASE_URL</label>
-                    <input value={llmApiBaseUrl} onChange={(e) => setLlmApiBaseUrl(e.target.value)} />
-                    <p>说明：此页输入会 300ms 防抖自动保存。</p>
-                </section>
-            )}
-
-            {tab === 'agent' && (
-                <section className="panel">
-                    <div className="row between">
-                        <h2>固定 Agent 表单</h2>
-                        <button onClick={saveAgentFull}>保存 Agent 配置</button>
+                {error && (
+                    <div className="error">
+                        {error}
+                        <div className="hint">若显示 Failed to fetch，请确认后端 API 已在 8787 端口启动，或前端代理是否可访问。</div>
                     </div>
-                    <div>
-                        <label>选择 Agent 类型</label>
-                        <select
-                            value={selectedAgent}
-                            onChange={(e) => setSelectedAgent(e.target.value as FixedAgentKey)}
-                        >
+                )}
+
+                {tab === 'basic' && (
+                    <section className="panel">
+                        <h2>基础设置 (.env)</h2>
+                        <label>LLM_API_KEY</label>
+                        <input value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)} />
+                        <label>LLM_API_BASE_URL</label>
+                        <input value={llmApiBaseUrl} onChange={(e) => setLlmApiBaseUrl(e.target.value)} />
+                        <p>说明：此页输入会 300ms 防抖自动保存。</p>
+                    </section>
+                )}
+
+                {tab === 'agent' && (
+                    <section className="panel">
+                        <div className="row between" style={{ paddingBottom: '12px', borderBottom: '1px solid var(--line)', marginBottom: '16px' }}>
+                            <h2 style={{ margin: 0 }}>固定 Agent 表单</h2>
+                            <button className="btn-primary" onClick={saveAgentFull}>保存 Agent 配置</button>
+                        </div>
+
+                        <div className="agent-tabs">
                             {FIXED_AGENT_OPTIONS.map((option) => (
-                                <option key={option.key} value={option.key}>
+                                <button
+                                    key={option.key}
+                                    className={selectedAgent === option.key ? 'active' : ''}
+                                    onClick={() => setSelectedAgent(option.key as FixedAgentKey)}
+                                >
                                     {option.label}
-                                </option>
+                                </button>
                             ))}
-                        </select>
-                    </div>
-
-                    {selectedAgent === 'summary_config' && (
-                        <SummaryForm
-                            value={summaryConfig}
-                            onChange={(next) => updateFixedSectionConfig('summary_config', next as unknown as JsonObject)}
-                        />
-                    )}
-
-                    {selectedAgent === 'forward_config' && (
-                        <ForwardForm
-                            value={forwardConfig}
-                            onChange={(next) => updateFixedSectionConfig('forward_config', next as unknown as JsonObject)}
-                        />
-                    )}
-
-                    {selectedAgent === 'auto_reply_config' && (
-                        <AutoReplyForm
-                            value={autoReplyConfig}
-                            onChange={(next) => updateFixedSectionConfig('auto_reply_config', next as unknown as JsonObject)}
-                        />
-                    )}
-
-                    {selectedAgent === 'dida_agent_config' && (
-                        <DidaForm
-                            value={didaConfig}
-                            onChange={(next) => updateFixedSectionConfig('dida_agent_config', next as unknown as JsonObject)}
-                        />
-                    )}
-
-                    {selectedAgent === 'dida_config' && (
-                        <DidaSchedulerForm
-                            value={didaSchedulerConfig}
-                            onChange={(next) => updateFixedSectionConfig('dida_config', next as unknown as JsonObject)}
-                        />
-                    )}
-                </section>
-            )}
-
-            {tab === 'scheduler' && (
-                <section className="panel">
-                    <h2>Scheduler 设置</h2>
-                    <details className="scheduler-help top-gap" open>
-                        <summary>Scheduler 功能使用说明</summary>
-                        <div className="scheduler-help-content">
-                            <h4>1. 可用参数</h4>
-                            <ul>
-                                <li>timezone: 调度时区，例如 Asia/Shanghai。cron 计算会使用该时区。</li>
-                                <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
-                                <li>name: 任务名称，仅用于识别和展示。</li>
-                                <li>type: 调度类型，可选 cron 或 interval。</li>
-                                <li>执行时间(HH:MM:SS): 仅在 type=cron 时填写，系统会自动转换为 cron 表达式。</li>
-                                <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
-                                <li>enabled: 是否启用该 schedule。</li>
-                                <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
-                            </ul>
-
-                            <h4>2. 可用操作</h4>
-                            <ul>
-                                <li>新增 Schedule: 创建一条新的调度任务。</li>
-                                <li>复制: 复制当前任务，用于快速创建相似任务。</li>
-                                <li>上移/下移: 调整任务执行顺序（保存后写入 YAML 顺序）。</li>
-                                <li>删除: 删除任务。</li>
-                                <li>保存并编译 Scheduler: 调用后端编译接口并保存到 agent_config.yaml。</li>
-                                <li>刷新时间线: 基于当前配置计算未来触发时间。</li>
-                            </ul>
-
-                            <h4>3. 节点类型与嵌套</h4>
-                            <ul>
-                                <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
-                                <li>group: 逻辑分组节点，children 内可继续嵌套 action/group。</li>
-                            </ul>
-
-                            <h4>4. group/action 参数说明</h4>
-                            <ul>
-                                <li>group.name: 分组名称，仅用于结构化组织步骤。</li>
-                                <li>group.children: 子步骤列表，按顺序执行。</li>
-                                <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
-                                <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
-                            </ul>
-
-                            <h4>5. 推荐使用流程</h4>
-                            <ol>
-                                <li>先创建 schedule 并设置 type、执行时间(HH:MM:SS)/seconds、enabled。</li>
-                                <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
-                                <li>点击刷新时间线确认触发节奏。</li>
-                                <li>点击保存并编译 Scheduler 落盘生效。</li>
-                            </ol>
                         </div>
-                    </details>
 
-                    <div className="row gap-8 wrap">
-                        <div className="grow">
-                            <label>时区</label>
-                            <input
-                                value={schedulerConfig.timezone}
-                                onChange={(e) =>
-                                    updateSchedulerConfig({
-                                        ...schedulerConfig,
-                                        timezone: e.target.value,
-                                    })
-                                }
+                        {selectedAgent === 'summary_config' && (
+                            <SummaryForm
+                                value={summaryConfig}
+                                onChange={(next) => updateFixedSectionConfig('summary_config', next as unknown as JsonObject)}
                             />
-                        </div>
-                        <div>
-                            <label>时间线条数</label>
-                            <input
-                                type="number"
-                                value={timelineCount}
-                                onChange={(e) => setTimelineCount(Number(e.target.value) || 10)}
+                        )}
+
+                        {selectedAgent === 'forward_config' && (
+                            <ForwardForm
+                                value={forwardConfig}
+                                onChange={(next) => updateFixedSectionConfig('forward_config', next as unknown as JsonObject)}
                             />
-                        </div>
-                    </div>
+                        )}
 
-                    <div className="row gap-8 top-gap wrap">
-                        <button onClick={addSchedule}>+ 新增 Schedule</button>
-                        <button onClick={saveSchedulerConfig}>保存并编译 Scheduler</button>
-                        <button onClick={loadTimeline}>刷新时间线</button>
-                        {schedulerMessage && <span className="muted">{schedulerMessage}</span>}
-                    </div>
+                        {selectedAgent === 'auto_reply_config' && (
+                            <AutoReplyForm
+                                value={autoReplyConfig}
+                                onChange={(next) => updateFixedSectionConfig('auto_reply_config', next as unknown as JsonObject)}
+                            />
+                        )}
 
-                    <div className="two-col top-gap">
-                        <div className="card">
-                            <h3>Schedule 列表</h3>
-                            <ul className="list">
-                                {schedulerConfig.schedules.map((item, idx) => (
-                                    <li
-                                        key={`${item.name}_${idx}`}
-                                        className={selectedScheduleIndex === idx ? 'selected' : ''}
-                                        onClick={() => setSelectedScheduleIndex(idx)}
-                                    >
-                                        <div className="grow">
-                                            <div>
-                                                {item.name || `schedule_${idx + 1}`} | {item.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | {item.enabled ? '已启用' : '已停用'}
-                                            </div>
-                                            <div className="rule-preview">
-                                                {item.type === 'cron'
-                                                    ? `执行时间: ${(() => {
-                                                        const hms = hmsFromCron(item.expression);
-                                                        return `${hms.hour}:${hms.minute}:${hms.second}`;
-                                                    })()}`
-                                                    : `执行间隔: ${item.seconds || 60} 秒`}
-                                            </div>
-                                            <StepTreePreview nodes={item.steps_tree || []} />
-                                        </div>
-                                        <div className="row gap-8 wrap">
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    moveSchedule(idx, -1);
-                                                }}
-                                                disabled={idx === 0}
-                                            >
-                                                上移
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    moveSchedule(idx, 1);
-                                                }}
-                                                disabled={idx === schedulerConfig.schedules.length - 1}
-                                            >
-                                                下移
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    duplicateSchedule(idx);
-                                                }}
-                                            >
-                                                复制
-                                            </button>
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    removeSchedule(idx);
-                                                }}
-                                            >
-                                                删除
-                                            </button>
-                                        </div>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
+                        {selectedAgent === 'dida_agent_config' && (
+                            <DidaForm
+                                value={didaConfig}
+                                onChange={(next) => updateFixedSectionConfig('dida_agent_config', next as unknown as JsonObject)}
+                            />
+                        )}
 
-                        <div className="card">
-                            <h3>时间线预览</h3>
-                            <div className="timeline">
-                                {timelineEvents.length === 0 ? (
-                                    <div className="muted">暂无数据，点击“刷新时间线”生成。</div>
-                                ) : (
-                                    timelineEvents.map((event, idx) => (
-                                        <div key={`${event.schedule_name}_${event.trigger_at}_${idx}`}>
-                                            [{event.source}] {event.schedule_name} - {event.trigger_at}
-                                        </div>
-                                    ))
-                                )}
+                        {selectedAgent === 'dida_config' && (
+                            <DidaSchedulerForm
+                                value={didaSchedulerConfig}
+                                onChange={(next) => updateFixedSectionConfig('dida_config', next as unknown as JsonObject)}
+                            />
+                        )}
+                    </section>
+                )}
+
+                {tab === 'scheduler' && (
+                    <section className="panel">
+                        <h2>Scheduler 设置</h2>
+                        <details className="scheduler-help top-gap" open>
+                            <summary>Scheduler 功能使用说明</summary>
+                            <div className="scheduler-help-content">
+                                <h4>1. 可用参数</h4>
+                                <ul>
+                                    <li>timezone: 调度时区，例如 Asia/Shanghai。cron 计算会使用该时区。</li>
+                                    <li>timeline count: 时间线预览条数，上限建议不超过 200。</li>
+                                    <li>name: 任务名称，仅用于识别和展示。</li>
+                                    <li>type: 调度类型，可选 cron 或 interval。</li>
+                                    <li>执行时间(HH:MM:SS): 仅在 type=cron 时填写，系统会自动转换为 cron 表达式。</li>
+                                    <li>seconds: 间隔秒数，仅在 type=interval 时生效。</li>
+                                    <li>enabled: 是否启用该 schedule。</li>
+                                    <li>steps_tree: 调度步骤树，支持 action/group 两类节点。</li>
+                                </ul>
+
+                                <h4>2. 可用操作</h4>
+                                <ul>
+                                    <li>新增 Schedule: 创建一条新的调度任务。</li>
+                                    <li>复制: 复制当前任务，用于快速创建相似任务。</li>
+                                    <li>上移/下移: 调整任务执行顺序（保存后写入 YAML 顺序）。</li>
+                                    <li>删除: 删除任务。</li>
+                                    <li>保存并编译 Scheduler: 调用后端编译接口并保存到 agent_config.yaml。</li>
+                                    <li>刷新时间线: 基于当前配置计算未来触发时间。</li>
+                                </ul>
+
+                                <h4>3. 节点类型与嵌套</h4>
+                                <ul>
+                                    <li>action: 实际执行动作，包含 action 标识和 params 参数。</li>
+                                    <li>group: 逻辑分组节点，children 内可继续嵌套 action/group。</li>
+                                </ul>
+
+                                <h4>4. group/action 参数说明</h4>
+                                <ul>
+                                    <li>group.name: 分组名称，仅用于结构化组织步骤。</li>
+                                    <li>group.children: 子步骤列表，按顺序执行。</li>
+                                    <li>action.action: 动作 ID，例如 core.send_group_msg、summary.daily_report、dida.poll、dida.push_task_list。</li>
+                                    <li>action.params: 动作参数，优先使用表单输入，高级模式可编辑 JSON。</li>
+                                </ul>
+
+                                <h4>5. 推荐使用流程</h4>
+                                <ol>
+                                    <li>先创建 schedule 并设置 type、执行时间(HH:MM:SS)/seconds、enabled。</li>
+                                    <li>在 steps_tree 里先搭结构（group），再填 action 参数。</li>
+                                    <li>点击刷新时间线确认触发节奏。</li>
+                                    <li>点击保存并编译 Scheduler 落盘生效。</li>
+                                </ol>
+                            </div>
+                        </details>
+
+                        <div className="row gap-8 wrap">
+                            <div className="grow">
+                                <label>时区</label>
+                                <input
+                                    value={schedulerConfig.timezone}
+                                    onChange={(e) =>
+                                        updateSchedulerConfig({
+                                            ...schedulerConfig,
+                                            timezone: e.target.value,
+                                        })
+                                    }
+                                />
+                            </div>
+                            <div>
+                                <label>时间线条数</label>
+                                <input
+                                    type="number"
+                                    value={timelineCount}
+                                    onChange={(e) => setTimelineCount(Number(e.target.value) || 10)}
+                                />
                             </div>
                         </div>
-                    </div>
 
-                    {selectedSchedule ? (
-                        <div className="card top-gap">
-                            <h3>当前任务</h3>
-                            <div className="config-summary-card">
-                                <div className="row between wrap gap-8">
-                                    <strong>{selectedSchedule.name || '未命名任务'}</strong>
-                                    <div className="row gap-8">
-                                        <button onClick={() => setOpenScheduleBasicModal(true)}>编辑基础参数</button>
-                                        <button onClick={() => setOpenScheduleStepModal(true)}>编辑执行步骤</button>
-                                    </div>
-                                </div>
-                                <div className="rule-preview">
-                                    类型：{selectedSchedule.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | 状态：{selectedSchedule.enabled ? '已启用' : '已停用'}
-                                </div>
-                                <div className="rule-preview">
-                                    {selectedSchedule.type === 'cron'
-                                        ? `执行时间：${(() => {
-                                            const hms = hmsFromCron(selectedSchedule.expression);
-                                            return `${hms.hour}:${hms.minute}:${hms.second}`;
-                                        })()}`
-                                        : `执行间隔：${selectedSchedule.seconds || 60} 秒`}
-                                </div>
-                            </div>
+                        <div className="row gap-8 top-gap wrap">
+                            <button onClick={addSchedule}>+ 新增 Schedule</button>
+                            <button onClick={saveSchedulerConfig}>保存并编译 Scheduler</button>
+                            <button onClick={loadTimeline}>刷新时间线</button>
+                            {schedulerMessage && <span className="muted">{schedulerMessage}</span>}
+                        </div>
 
-                            <div className="top-gap">
-                                <label>步骤树预览</label>
-                                <div className="rule-box">
-                                    <StepTreePreview nodes={selectedSchedule.steps_tree || []} />
-                                </div>
-                            </div>
-
-                            <FormModal
-                                open={openScheduleBasicModal}
-                                title="Schedule 基础参数"
-                                onClose={() => setOpenScheduleBasicModal(false)}
-                            >
-                                <div className="grid2">
-                                    <div>
-                                        <label>任务名称</label>
-                                        <input
-                                            value={selectedSchedule.name}
-                                            onChange={(e) =>
-                                                updateScheduleAt(selectedScheduleIndex, {
-                                                    ...selectedSchedule,
-                                                    name: e.target.value,
-                                                })
-                                            }
-                                        />
-                                    </div>
-                                    <div>
-                                        <label>任务类型</label>
-                                        <select
-                                            value={selectedSchedule.type}
-                                            onChange={(e) => {
-                                                const nextType = e.target.value as 'cron' | 'interval';
-                                                const nextSchedule: ScheduleConfig = {
-                                                    ...selectedSchedule,
-                                                    type: nextType,
-                                                };
-                                                if (nextType === 'cron') {
-                                                    const hms = hmsFromCron(selectedSchedule.expression);
-                                                    nextSchedule.expression = cronFromHms(hms.hour, hms.minute, hms.second);
-                                                    delete nextSchedule.seconds;
-                                                } else {
-                                                    nextSchedule.seconds = selectedSchedule.seconds || 60;
-                                                    delete nextSchedule.expression;
-                                                }
-                                                updateScheduleAt(selectedScheduleIndex, nextSchedule);
-                                            }}
+                        <div className="two-col top-gap">
+                            <div className="card">
+                                <h3>Schedule 列表</h3>
+                                <ul className="list">
+                                    {schedulerConfig.schedules.map((item, idx) => (
+                                        <li
+                                            key={`${item.name}_${idx}`}
+                                            className={selectedScheduleIndex === idx ? 'selected' : ''}
+                                            onClick={() => setSelectedScheduleIndex(idx)}
                                         >
-                                            <option value="cron">定时(Cron)</option>
-                                            <option value="interval">间隔(Interval)</option>
-                                        </select>
-                                    </div>
-
-                                    <SwitchField
-                                        checked={selectedSchedule.enabled}
-                                        onChange={(enabled) =>
-                                            updateScheduleAt(selectedScheduleIndex, {
-                                                ...selectedSchedule,
-                                                enabled,
-                                            })
-                                        }
-                                        label="启用任务"
-                                    />
-
-                                    {selectedSchedule.type === 'cron' ? (
-                                        <div className="full-row">
-                                            <label>执行时间（24小时制）</label>
-                                            <div className="row gap-8 wrap">
-                                                {(() => {
-                                                    const hms = hmsFromCron(selectedSchedule.expression);
-                                                    return (
-                                                        <>
-                                                            <input
-                                                                className="time-field"
-                                                                value={hms.hour}
-                                                                onChange={(e) =>
-                                                                    updateScheduleAt(selectedScheduleIndex, {
-                                                                        ...selectedSchedule,
-                                                                        expression: cronFromHms(e.target.value, hms.minute, hms.second),
-                                                                    })
-                                                                }
-                                                                placeholder="小时"
-                                                            />
-                                                            <span>:</span>
-                                                            <input
-                                                                className="time-field"
-                                                                value={hms.minute}
-                                                                onChange={(e) =>
-                                                                    updateScheduleAt(selectedScheduleIndex, {
-                                                                        ...selectedSchedule,
-                                                                        expression: cronFromHms(hms.hour, e.target.value, hms.second),
-                                                                    })
-                                                                }
-                                                                placeholder="分钟"
-                                                            />
-                                                            <span>:</span>
-                                                            <input
-                                                                className="time-field"
-                                                                value={hms.second}
-                                                                onChange={(e) =>
-                                                                    updateScheduleAt(selectedScheduleIndex, {
-                                                                        ...selectedSchedule,
-                                                                        expression: cronFromHms(hms.hour, hms.minute, e.target.value),
-                                                                    })
-                                                                }
-                                                                placeholder="秒"
-                                                            />
-                                                        </>
-                                                    );
-                                                })()}
+                                            <div className="grow">
+                                                <div>
+                                                    {item.name || `schedule_${idx + 1}`} | {item.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | {item.enabled ? '已启用' : '已停用'}
+                                                </div>
+                                                <div className="rule-preview">
+                                                    {item.type === 'cron'
+                                                        ? `执行时间: ${(() => {
+                                                            const hms = hmsFromCron(item.expression);
+                                                            return `${hms.hour}:${hms.minute}:${hms.second}`;
+                                                        })()}`
+                                                        : `执行间隔: ${item.seconds || 60} 秒`}
+                                                </div>
+                                                <StepTreePreview nodes={item.steps_tree || []} />
                                             </div>
-                                            <div className="muted">系统会在后台自动转换为 cron 表达式并保存。</div>
-                                        </div>
+                                            <div className="row gap-8 wrap">
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        moveSchedule(idx, -1);
+                                                    }}
+                                                    disabled={idx === 0}
+                                                >
+                                                    上移
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        moveSchedule(idx, 1);
+                                                    }}
+                                                    disabled={idx === schedulerConfig.schedules.length - 1}
+                                                >
+                                                    下移
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        duplicateSchedule(idx);
+                                                    }}
+                                                >
+                                                    复制
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        removeSchedule(idx);
+                                                    }}
+                                                >
+                                                    删除
+                                                </button>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+
+                            <div className="card">
+                                <h3>时间线预览</h3>
+                                <div className="timeline">
+                                    {timelineEvents.length === 0 ? (
+                                        <div className="muted">暂无数据，点击“刷新时间线”生成。</div>
                                     ) : (
+                                        timelineEvents.map((event, idx) => (
+                                            <div key={`${event.schedule_name}_${event.trigger_at}_${idx}`}>
+                                                [{event.source}] {event.schedule_name} - {event.trigger_at}
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {selectedSchedule ? (
+                            <div className="card top-gap">
+                                <h3>当前任务</h3>
+                                <div className="summary-card">
+                                    <div className="row between wrap gap-8">
+                                        <strong>{selectedSchedule.name || '未命名任务'}</strong>
+                                        <div className="row gap-8">
+                                            <button onClick={() => setOpenScheduleBasicModal(true)}>编辑基础参数</button>
+                                            <button onClick={() => setOpenScheduleStepModal(true)}>编辑执行步骤</button>
+                                        </div>
+                                    </div>
+                                    <div className="rule-preview">
+                                        类型：{selectedSchedule.type === 'cron' ? '定时(Cron)' : '间隔(Interval)'} | 状态：{selectedSchedule.enabled ? '已启用' : '已停用'}
+                                    </div>
+                                    <div className="rule-preview">
+                                        {selectedSchedule.type === 'cron'
+                                            ? `执行时间：${(() => {
+                                                const hms = hmsFromCron(selectedSchedule.expression);
+                                                return `${hms.hour}:${hms.minute}:${hms.second}`;
+                                            })()}`
+                                            : `执行间隔：${selectedSchedule.seconds || 60} 秒`}
+                                    </div>
+                                </div>
+
+                                <div className="top-gap">
+                                    <label>步骤树预览</label>
+                                    <div className="card-grid">
+                                        <StepTreePreview nodes={selectedSchedule.steps_tree || []} />
+                                    </div>
+                                </div>
+
+                                <FormModal
+                                    open={openScheduleBasicModal}
+                                    title="Schedule 基础参数"
+                                    onClose={() => setOpenScheduleBasicModal(false)}
+                                >
+                                    <div className="grid2">
                                         <div>
-                                            <label>间隔秒数</label>
+                                            <label>任务名称</label>
                                             <input
-                                                type="number"
-                                                value={selectedSchedule.seconds || 60}
+                                                value={selectedSchedule.name}
                                                 onChange={(e) =>
                                                     updateScheduleAt(selectedScheduleIndex, {
                                                         ...selectedSchedule,
-                                                        seconds: Number(e.target.value),
+                                                        name: e.target.value,
                                                     })
                                                 }
                                             />
                                         </div>
-                                    )}
-                                </div>
-                            </FormModal>
+                                        <div>
+                                            <label>任务类型</label>
+                                            <select
+                                                value={selectedSchedule.type}
+                                                onChange={(e) => {
+                                                    const nextType = e.target.value as 'cron' | 'interval';
+                                                    const nextSchedule: ScheduleConfig = {
+                                                        ...selectedSchedule,
+                                                        type: nextType,
+                                                    };
+                                                    if (nextType === 'cron') {
+                                                        const hms = hmsFromCron(selectedSchedule.expression);
+                                                        nextSchedule.expression = cronFromHms(hms.hour, hms.minute, hms.second);
+                                                        delete nextSchedule.seconds;
+                                                    } else {
+                                                        nextSchedule.seconds = selectedSchedule.seconds || 60;
+                                                        delete nextSchedule.expression;
+                                                    }
+                                                    updateScheduleAt(selectedScheduleIndex, nextSchedule);
+                                                }}
+                                            >
+                                                <option value="cron">定时(Cron)</option>
+                                                <option value="interval">间隔(Interval)</option>
+                                            </select>
+                                        </div>
 
-                            <FormModal
-                                open={openScheduleStepModal}
-                                title="Schedule 执行步骤"
-                                onClose={() => setOpenScheduleStepModal(false)}
-                            >
-                                <div>
-                                    <label>步骤树</label>
-                                    <StepTreeEditor
-                                        nodes={selectedSchedule.steps_tree || []}
-                                        onChange={(steps_tree) =>
-                                            updateScheduleAt(selectedScheduleIndex, {
-                                                ...selectedSchedule,
-                                                steps_tree,
-                                            })
-                                        }
-                                    />
-                                </div>
-                            </FormModal>
-                        </div>
-                    ) : (
-                        <div className="muted top-gap">暂无 Schedule，请先新增。</div>
-                    )}
-                </section>
-            )}
-
-            {tab === 'deploy' && (
-                <section className="panel two-col">
-                    <div className="card">
-                        <h3>推送配置</h3>
-                        {Object.entries(deployForm).map(([k, v]) => {
-                            if (typeof v === 'boolean') {
-                                return (
-                                    <label key={k} className="row gap-8">
-                                        <input
-                                            type="checkbox"
-                                            checked={v}
-                                            onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.checked })}
+                                        <SwitchField
+                                            checked={selectedSchedule.enabled}
+                                            onChange={(enabled) =>
+                                                updateScheduleAt(selectedScheduleIndex, {
+                                                    ...selectedSchedule,
+                                                    enabled,
+                                                })
+                                            }
+                                            label="启用任务"
                                         />
-                                        {k}
-                                    </label>
-                                );
-                            }
-                            return (
-                                <div key={k}>
-                                    <label>{k}</label>
-                                    <input
-                                        value={String(v)}
-                                        onChange={(e) =>
-                                            setDeployForm({
-                                                ...deployForm,
-                                                [k]: k === 'port' ? Number(e.target.value) : e.target.value,
-                                            })
-                                        }
-                                    />
-                                </div>
-                            );
-                        })}
-                        <div className="row gap-8">
-                            <button onClick={runConnectionTest}>测试连接</button>
-                            <button onClick={runPullAndRefresh}>拉取并刷新</button>
-                            <button onClick={runDeploy}>推送并重启</button>
-                        </div>
-                    </div>
-                    <div className="card">
-                        <h3>推送日志</h3>
-                        <pre>{deployLogs.join('\n')}</pre>
-                    </div>
-                </section>
-            )}
 
-            {tab === 'history' && (
-                <section className="panel card">
-                    <h3>快照历史</h3>
-                    <ul className="list">
-                        {snapshots.map((snap) => (
-                            <li key={snap}>
-                                <span>{snap}</span>
-                                <div className="row gap-8">
-                                    <button onClick={() => restore(snap, 'env')}>恢复为 .env</button>
-                                    <button onClick={() => restore(snap, 'agent')}>恢复为 agent_config.yaml</button>
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                </section>
-            )}
+                                        {selectedSchedule.type === 'cron' ? (
+                                            <div className="full-row">
+                                                <label>执行时间（24小时制）</label>
+                                                <div className="row gap-8 wrap">
+                                                    {(() => {
+                                                        const hms = hmsFromCron(selectedSchedule.expression);
+                                                        return (
+                                                            <>
+                                                                <input
+                                                                    className="time-field"
+                                                                    value={hms.hour}
+                                                                    onChange={(e) =>
+                                                                        updateScheduleAt(selectedScheduleIndex, {
+                                                                            ...selectedSchedule,
+                                                                            expression: cronFromHms(e.target.value, hms.minute, hms.second),
+                                                                        })
+                                                                    }
+                                                                    placeholder="小时"
+                                                                />
+                                                                <span>:</span>
+                                                                <input
+                                                                    className="time-field"
+                                                                    value={hms.minute}
+                                                                    onChange={(e) =>
+                                                                        updateScheduleAt(selectedScheduleIndex, {
+                                                                            ...selectedSchedule,
+                                                                            expression: cronFromHms(hms.hour, e.target.value, hms.second),
+                                                                        })
+                                                                    }
+                                                                    placeholder="分钟"
+                                                                />
+                                                                <span>:</span>
+                                                                <input
+                                                                    className="time-field"
+                                                                    value={hms.second}
+                                                                    onChange={(e) =>
+                                                                        updateScheduleAt(selectedScheduleIndex, {
+                                                                            ...selectedSchedule,
+                                                                            expression: cronFromHms(hms.hour, hms.minute, e.target.value),
+                                                                        })
+                                                                    }
+                                                                    placeholder="秒"
+                                                                />
+                                                            </>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                <div className="muted">系统会在后台自动转换为 cron 表达式并保存。</div>
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <label>间隔秒数</label>
+                                                <input
+                                                    type="number"
+                                                    value={selectedSchedule.seconds || 60}
+                                                    onChange={(e) =>
+                                                        updateScheduleAt(selectedScheduleIndex, {
+                                                            ...selectedSchedule,
+                                                            seconds: Number(e.target.value),
+                                                        })
+                                                    }
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                </FormModal>
+
+                                <FormModal
+                                    open={openScheduleStepModal}
+                                    title="Schedule 执行步骤"
+                                    onClose={() => setOpenScheduleStepModal(false)}
+                                >
+                                    <div>
+                                        <label>步骤树</label>
+                                        <StepTreeEditor
+                                            nodes={selectedSchedule.steps_tree || []}
+                                            onChange={(steps_tree) =>
+                                                updateScheduleAt(selectedScheduleIndex, {
+                                                    ...selectedSchedule,
+                                                    steps_tree,
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                </FormModal>
+                            </div>
+                        ) : (
+                            <div className="muted top-gap">暂无 Schedule，请先新增。</div>
+                        )}
+                    </section>
+                )}
+
+                {tab === 'deploy' && (
+                    <section className="panel two-col">
+                        <div className="card">
+                            <h3>推送配置</h3>
+                            {Object.entries(deployForm).map(([k, v]) => {
+                                if (typeof v === 'boolean') {
+                                    return (
+                                        <label key={k} className="row gap-8">
+                                            <input
+                                                type="checkbox"
+                                                checked={v}
+                                                onChange={(e) => setDeployForm({ ...deployForm, [k]: e.target.checked })}
+                                            />
+                                            {k}
+                                        </label>
+                                    );
+                                }
+                                return (
+                                    <div key={k}>
+                                        <label>{k}</label>
+                                        <input
+                                            value={String(v)}
+                                            onChange={(e) =>
+                                                setDeployForm({
+                                                    ...deployForm,
+                                                    [k]: k === 'port' ? Number(e.target.value) : e.target.value,
+                                                })
+                                            }
+                                        />
+                                    </div>
+                                );
+                            })}
+                            <div className="row gap-8">
+                                <button onClick={runConnectionTest}>测试连接</button>
+                                <button onClick={runPullAndRefresh}>拉取并刷新</button>
+                                <button onClick={runDeploy}>推送并重启</button>
+                            </div>
+                        </div>
+                        <div className="card">
+                            <h3>推送日志</h3>
+                            <pre>{deployLogs.join('\n')}</pre>
+                        </div>
+                    </section>
+                )}
+
+                {tab === 'history' && (
+                    <section className="panel card">
+                        <h3>快照历史</h3>
+                        <ul className="list">
+                            {snapshots.map((snap) => (
+                                <li key={snap}>
+                                    <span>{snap}</span>
+                                    <div className="row gap-8">
+                                        <button onClick={() => restore(snap, 'env')}>恢复为 .env</button>
+                                        <button onClick={() => restore(snap, 'agent')}>恢复为 agent_config.yaml</button>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
+                )}
+            </div>
         </div>
     );
 }
