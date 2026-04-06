@@ -345,7 +345,7 @@ function toStepNode(item: JsonValue): StepNode | null {
 
     if (kind === 'action') {
         node.action = toStringValue(obj.action, 'core.send_group_msg');
-        node.params = asObject(obj.params);
+        node.params = withActionDefaults(node.action, asObject(obj.params), true);
         return node;
     }
 
@@ -383,11 +383,12 @@ function normalizeSchedules(input: JsonValue | undefined): ScheduleConfig[] {
         } else if (Array.isArray(obj.steps)) {
             schedule.steps_tree = obj.steps.map((legacy) => {
                 const legacyObj = asObject(legacy);
+                const action = toStringValue(legacyObj.action, 'core.send_group_msg');
                 return {
                     id: makeNodeId(),
                     kind: 'action',
-                    action: toStringValue(legacyObj.action, 'core.send_group_msg'),
-                    params: asObject(legacyObj.params),
+                    action,
+                    params: withActionDefaults(action, asObject(legacyObj.params), true),
                 } satisfies StepNode;
             });
         } else {
@@ -438,11 +439,12 @@ function defaultStep(kind: StepNode['kind']): StepNode {
     if (kind === 'group') {
         return { id: makeNodeId(), kind: 'group', name: 'group', children: [] };
     }
+    const action = 'core.send_group_msg';
     return {
         id: makeNodeId(),
         kind: 'action',
-        action: 'core.send_group_msg',
-        params: { group_id: '', message: '' },
+        action,
+        params: withActionDefaults(action, {}, true),
     };
 }
 
@@ -1713,7 +1715,7 @@ function StepTreeEditor({
                                         updateAt(idx, {
                                             ...node,
                                             action: e.target.value,
-                                            params: withActionDefaults(e.target.value, node.params || {}, true),
+                                            params: withActionDefaults(e.target.value, {}, true),
                                         })
                                     }
                                 >
@@ -1730,7 +1732,12 @@ function StepTreeEditor({
                             <ActionParamsEditor
                                 action={node.action || 'core.send_group_msg'}
                                 params={withActionDefaults(node.action || 'core.send_group_msg', node.params || {}, true)}
-                                onChange={(nextParams) => updateAt(idx, { ...node, params: nextParams })}
+                                onChange={(nextParams) =>
+                                    updateAt(idx, {
+                                        ...node,
+                                        params: withActionDefaults(node.action || 'core.send_group_msg', nextParams, true),
+                                    })
+                                }
                             />
                         </>
                     )}
