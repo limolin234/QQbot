@@ -26,7 +26,7 @@ except Exception:
 
 
 # ── 路由目标定义 ──────────────────────────────────────────────
-RouteDest = Literal["volunteer_monitor", "badminton_monitor", "dida", "reminder", "auto_reply"]
+RouteDest = Literal["volunteer_monitor", "badminton_monitor", "dida", "reminder", "safety_checkin", "auto_reply"]
 
 
 # ── LLM 路由 ──────────────────────────────────────────────────
@@ -38,6 +38,7 @@ _ROUTER_SYSTEM = """\
 - badminton_monitor：羽毛球接龙监控，管理"我想打球的时间段"和自动接龙（添加/查看/删除打球意向、自动接羽毛球接龙、查看已接龙日程）
 - dida：滴答清单任务管理（创建/查看/完成待办事项）
 - reminder：定时提醒（设置提醒、查看提醒）
+- safety_checkin：寝室报平安接龙管理（查看报平安状态、手动触发报平安流程）
 - auto_reply：普通闲聊、问答、其他无法归类的消息
 
 路由判断规则：
@@ -45,6 +46,7 @@ _ROUTER_SYSTEM = """\
 - 如果用户想监控羽毛球接龙、设置打球意向、查看已接龙 → badminton_monitor
 - 如果用户想管理待办事项 → dida
 - 如果用户想设置定时提醒 → reminder
+- 如果用户想查看报平安状态或触发报平安 → safety_checkin
 - 其他所有消息 → auto_reply
 
 只输出 JSON，格式：{"dest": "<路由目标>", "reason": "<一句话原因>"}
@@ -68,7 +70,7 @@ async def _llm_route(text: str) -> tuple[RouteDest, str]:
         parsed = json.loads(raw)
         dest = str(parsed.get("dest") or "auto_reply")
         reason = str(parsed.get("reason") or "")
-        if dest not in ("volunteer_monitor", "badminton_monitor", "dida", "reminder", "auto_reply"):
+        if dest not in ("volunteer_monitor", "badminton_monitor", "dida", "reminder", "safety_checkin", "auto_reply"):
             dest = "auto_reply"
         return dest, reason  # type: ignore
     except Exception as e:
@@ -90,11 +92,13 @@ async def route_private(
     badminton_monitor_enabled: bool,
     dida_enabled: bool,
     reminder_enabled: bool,
+    safety_checkin_enabled: bool,
     auto_reply_fn,
     volunteer_monitor_fn,
     badminton_monitor_fn,
     dida_fn,
     reminder_fn,
+    safety_checkin_fn,
 ) -> None:
     """
     路由私聊消息到对应 Agent，并向主人发送路由决策通知。
@@ -129,5 +133,7 @@ async def route_private(
         await dida_fn(msg)
     elif dest == "reminder" and reminder_enabled:
         await reminder_fn(msg)
+    elif dest == "safety_checkin" and safety_checkin_enabled:
+        await safety_checkin_fn(msg)
     else:
         await auto_reply_fn(msg)

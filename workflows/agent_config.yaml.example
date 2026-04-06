@@ -287,3 +287,28 @@ badminton_monitor_scheduler_config:
     keywords:
       - "捞"
       - "接龙"
+
+safety_checkin_config:
+  file_name: safety_checkin_scheduler.py
+  config:
+    # 必填：监控的报平安群列表
+    monitor_groups:
+      - "1075786046"
+    # 必填：管理员 QQ 号（接收完成/超时汇报）
+    admin_qq: "3291053545"
+    # 必填：成员名单，格式：姓名 -> QQ号
+    members:
+      "张三": "111111"
+      "李四": "222222"
+      "王五": "333333"
+    # 可选：启动小时（默认 21，即晚上 9 点）
+    start_hour: 21
+    # 可选：截止小时（默认 22，即晚上 10 点）
+    end_hour: 22
+    # 可选：提醒间隔分钟（默认 10）
+    interval_minutes: 10
+    # 可选：接龙关键词（严格匹配，默认 "1"）
+    checkin_keyword: "1"
+    # 可选：数据库路径
+    db_path: "data/safety_checkin.db"
+
