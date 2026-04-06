@@ -282,11 +282,16 @@ dida_config:
     redirect_uri: "" # 需与申请时填写的 Redirect URL 一致，如无个人网址，可用http://www.baidu.com
     
     # 轮询间隔（秒）
-    poll_interval_seconds: 600
-    # 提前提醒窗口（秒），在此窗口内的任务会触发提醒
-    due_window_seconds: 60
+    poll_interval_seconds: 900
+    # 提前提醒窗口（秒）
+    due_window_seconds: 600
+    # 补偿窗口（秒）：允许补发“刚过期不久”的提醒，避免轮询间隙漏提醒
+    compensate_window_seconds: 300
     # 每次扫描最大任务数
     max_tasks_scan_per_user: 200
+    # 提醒发送群列表：配置后将发送到这些群，不再依赖任务里的路由标签
+    reminder_group_ids:
+      - "1231231234"
     # 可选：指定监控的项目ID列表，留空则监控所有项目（包括收件箱）
     project_ids: []
 
@@ -321,7 +326,7 @@ scheduler_manager:
 
       - name: "dida_polling"
         type: "interval"
-        seconds: 600
+        seconds: 900
         enabled: true
         steps:
           - action: "dida.poll"

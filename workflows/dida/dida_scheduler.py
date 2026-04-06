@@ -120,20 +120,36 @@ class DidaScheduler:
         dida_agent_config = self._load_dida_agent_config()
         poll_interval_seconds = int(config.get("poll_interval_seconds", 60))
         due_window_seconds = int(config.get("due_window_seconds", 60))
+        compensate_window_seconds = int(config.get("compensate_window_seconds", 0))
         max_tasks_scan = int(config.get("max_tasks_scan_per_user", 200))
         project_ids = config.get("project_ids")
+        reminder_group_ids = config.get("reminder_group_ids")
         if not isinstance(project_ids, list):
             project_ids = []
+        if not isinstance(reminder_group_ids, list):
+            reminder_group_ids = []
         admin_qqs = self._normalize_qq_list(dida_agent_config.get("admin_qqs", []))
         if not admin_qqs:
             admin_qqs = self._normalize_qq_list(config.get("admin_qqs", []))
 
+        poll_interval_seconds = max(poll_interval_seconds, 5)
+        due_window_seconds = max(due_window_seconds, 30)
+        if compensate_window_seconds <= 0:
+            compensate_window_seconds = max(
+                poll_interval_seconds - due_window_seconds,
+                0,
+            )
+
         return {
-            "poll_interval_seconds": max(poll_interval_seconds, 5),
-            "due_window_seconds": max(due_window_seconds, 30),
+            "poll_interval_seconds": poll_interval_seconds,
+            "due_window_seconds": due_window_seconds,
+            "compensate_window_seconds": max(compensate_window_seconds, 0),
             "max_tasks_scan_per_user": max(max_tasks_scan, 50),
             "project_ids": [
                 str(item).strip() for item in project_ids if str(item).strip()
+            ],
+            "reminder_group_ids": [
+                str(item).strip() for item in reminder_group_ids if str(item).strip()
             ],
             "admin_qqs": admin_qqs,
         }
@@ -949,18 +965,28 @@ class DidaScheduler:
                     if due_dt is None:
                         continue
                     now = _now()
+                    compensate_window = int(
+                        config.get("compensate_window_seconds", 0) or 0
+                    )
+                    due_window = int(config.get("due_window_seconds", 60) or 60)
                     if not (
-                        now
+                        now - timedelta(seconds=max(compensate_window, 0))
                         <= due_dt
-                        <= now + timedelta(seconds=config["due_window_seconds"])
+                        <= now + timedelta(seconds=max(due_window, 0))
                     ):
                         continue
                     route = _extract_route(task.get("content")) or _extract_route(
                         task.get("desc")
                     )
-                    if not route:
+                    configured_groups = list(config.get("reminder_group_ids", []))
+                    targets: list[tuple[str, str]] = []
+                    if configured_groups:
+                        targets = [("group", gid) for gid in configured_groups]
+                    elif route:
+                        chat_type, target_id, _ = route
+                        targets = [(chat_type, target_id)]
+                    if not targets:
                         continue
-                    chat_type, target_id, _ = route
                     key = f"{user_id}:{task.get('id')}:{task.get('dueDate')}"
                     if not self._should_notify(key):
                         continue
@@ -972,7 +998,8 @@ class DidaScheduler:
                         )
                     message = f"⏰ 任务到期提醒\n标题：{title}\n到期：{due_display}\nID: {task.get('id')}"
                     # Use user_id (the task owner) as the mention target instead of creator_id
-                    await self._send_route(chat_type, target_id, user_id, message)
+                    for chat_type, target_id in targets:
+                        await self._send_route(chat_type, target_id, user_id, message)
 
             # Save context for AI
             self._save_task_context(user_id, user_active_tasks)
