@@ -102,7 +102,9 @@ type DidaConfig = {
     bot_qq: string;
     admin_qqs: string[];
     due_window_seconds: number;
+    compensate_window_seconds: number;
     max_tasks_scan_per_user: number;
+    reminder_group_ids: string[];
     project_ids: string[];
     context_history_limit: number;
     context_max_chars: number;
@@ -345,7 +347,7 @@ function toStepNode(item: JsonValue): StepNode | null {
 
     if (kind === 'action') {
         node.action = toStringValue(obj.action, 'core.send_group_msg');
-        node.params = asObject(obj.params);
+        node.params = withActionDefaults(node.action, asObject(obj.params), true);
         return node;
     }
 
@@ -383,11 +385,12 @@ function normalizeSchedules(input: JsonValue | undefined): ScheduleConfig[] {
         } else if (Array.isArray(obj.steps)) {
             schedule.steps_tree = obj.steps.map((legacy) => {
                 const legacyObj = asObject(legacy);
+                const action = toStringValue(legacyObj.action, 'core.send_group_msg');
                 return {
                     id: makeNodeId(),
                     kind: 'action',
-                    action: toStringValue(legacyObj.action, 'core.send_group_msg'),
-                    params: asObject(legacyObj.params),
+                    action,
+                    params: withActionDefaults(action, asObject(legacyObj.params), true),
                 } satisfies StepNode;
             });
         } else {
@@ -438,11 +441,12 @@ function defaultStep(kind: StepNode['kind']): StepNode {
     if (kind === 'group') {
         return { id: makeNodeId(), kind: 'group', name: 'group', children: [] };
     }
+    const action = 'core.send_group_msg';
     return {
         id: makeNodeId(),
         kind: 'action',
-        action: 'core.send_group_msg',
-        params: { group_id: '', message: '' },
+        action,
+        params: withActionDefaults(action, {}, true),
     };
 }
 
@@ -1011,6 +1015,7 @@ function AutoReplyRulesEditor({
                                 <option value="keyword">关键词触发</option>
                                 <option value="at_bot">@机器人触发</option>
                                 <option value="ai_decide">AI 决策触发</option>
+                                <option value="at_bot || ai_decide">@机器人或 AI 决策触发</option>
                                 <option value="ai_decide || keyword">AI 决策或关键词触发</option>
                                 <option value="at_bot || keyword">@机器人或关键词触发</option>
                             </select>
@@ -1156,6 +1161,10 @@ function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (ne
                                 <option value="ai_decide">AI 决策触发</option>
                                 <option value="always">始终触发</option>
                                 <option value="keyword">关键词触发</option>
+                                <option value="at_bot">@机器人触发</option>
+                                <option value="at_bot || ai_decide">@机器人或 AI 决策触发</option>
+                                <option value="ai_decide || keyword">AI 决策或关键词触发</option>
+                                <option value="at_bot || keyword">@机器人或关键词触发</option>
                             </select>
                         </div>
                         <div>
@@ -1352,7 +1361,10 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
                     OAuth：client_id {value.client_id ? '已配置' : '未配置'} | client_secret {value.client_secret ? '已配置' : '未配置'}
                 </div>
                 <div className="rule-preview">
-                    due_window：{value.due_window_seconds}s | max_scan：{value.max_tasks_scan_per_user} | project_ids：{value.project_ids.length}
+                    due_window：{value.due_window_seconds}s | compensate：{value.compensate_window_seconds}s | max_scan：{value.max_tasks_scan_per_user}
+                </div>
+                <div className="rule-preview">
+                    reminder_groups：{value.reminder_group_ids.length} | project_ids：{value.project_ids.length}
                 </div>
             </div>
 
@@ -1389,11 +1401,26 @@ function DidaForm({ value, onChange }: { value: DidaConfig; onChange: (next: Did
                             />
                         </div>
                         <div>
+                            <label>compensate_window_seconds</label>
+                            <input
+                                type="number"
+                                value={value.compensate_window_seconds}
+                                onChange={(e) => onChange({ ...value, compensate_window_seconds: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div>
                             <label>max_tasks_scan_per_user</label>
                             <input
                                 type="number"
                                 value={value.max_tasks_scan_per_user}
                                 onChange={(e) => onChange({ ...value, max_tasks_scan_per_user: Number(e.target.value) })}
+                            />
+                        </div>
+                        <div className="full-row">
+                            <label>reminder_group_ids</label>
+                            <StringListEditor
+                                values={value.reminder_group_ids}
+                                onChange={(reminder_group_ids) => onChange({ ...value, reminder_group_ids })}
                             />
                         </div>
                         <div className="full-row">
@@ -1708,7 +1735,7 @@ function StepTreeEditor({
                                         updateAt(idx, {
                                             ...node,
                                             action: e.target.value,
-                                            params: withActionDefaults(e.target.value, node.params || {}, true),
+                                            params: withActionDefaults(e.target.value, {}, true),
                                         })
                                     }
                                 >
@@ -1725,7 +1752,12 @@ function StepTreeEditor({
                             <ActionParamsEditor
                                 action={node.action || 'core.send_group_msg'}
                                 params={withActionDefaults(node.action || 'core.send_group_msg', node.params || {}, true)}
-                                onChange={(nextParams) => updateAt(idx, { ...node, params: nextParams })}
+                                onChange={(nextParams) =>
+                                    updateAt(idx, {
+                                        ...node,
+                                        params: withActionDefaults(node.action || 'core.send_group_msg', nextParams, true),
+                                    })
+                                }
                             />
                         </>
                     )}
@@ -1923,7 +1955,9 @@ export default function App() {
                 client_secret: cfg.client_secret,
                 redirect_uri: cfg.redirect_uri,
                 due_window_seconds: cfg.due_window_seconds,
+                compensate_window_seconds: cfg.compensate_window_seconds,
                 max_tasks_scan_per_user: cfg.max_tasks_scan_per_user,
+                reminder_group_ids: cfg.reminder_group_ids,
                 project_ids: cfg.project_ids,
             },
         };
@@ -2040,7 +2074,9 @@ export default function App() {
                 client_secret: toStringValue(didaCfg.client_secret, toStringValue(didaAgentCfg.client_secret, '')),
                 redirect_uri: toStringValue(didaCfg.redirect_uri, toStringValue(didaAgentCfg.redirect_uri, '')),
                 due_window_seconds: toNumber(didaCfg.due_window_seconds, toNumber(didaAgentCfg.due_window_seconds, 60)),
+                compensate_window_seconds: toNumber(didaCfg.compensate_window_seconds, 0),
                 max_tasks_scan_per_user: toNumber(didaCfg.max_tasks_scan_per_user, toNumber(didaAgentCfg.max_tasks_scan_per_user, 200)),
+                reminder_group_ids: toStringArray(didaCfg.reminder_group_ids),
                 project_ids: (() => {
                     const fromConfig = toStringArray(didaCfg.project_ids);
                     if (fromConfig.length > 0) return fromConfig;
@@ -2245,10 +2281,15 @@ export default function App() {
             fixedSections.dida_config.config.due_window_seconds,
             toNumber(fixedSections.dida_agent_config.config.due_window_seconds, 60),
         ),
+        compensate_window_seconds: toNumber(
+            fixedSections.dida_config.config.compensate_window_seconds,
+            0,
+        ),
         max_tasks_scan_per_user: toNumber(
             fixedSections.dida_config.config.max_tasks_scan_per_user,
             toNumber(fixedSections.dida_agent_config.config.max_tasks_scan_per_user, 200),
         ),
+        reminder_group_ids: toStringArray(fixedSections.dida_config.config.reminder_group_ids),
         project_ids: (() => {
             const fromConfig = toStringArray(fixedSections.dida_config.config.project_ids);
             if (fromConfig.length > 0) return fromConfig;
