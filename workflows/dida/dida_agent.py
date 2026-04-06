@@ -1333,6 +1333,7 @@ class DidaAgentDecisionEngine:
                 "user_name": context.user_name,
                 "ts": context.ts,
             },
+            "history_messages": context.history_messages,
             "instruction": {
                 "raw_message": context.raw_message,
                 "cleaned_message": context.cleaned_message,
