@@ -41,7 +41,7 @@ from ncatbot.core import PrivateMessage
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent_pool import submit_agent_job
 from bot import QQnumber, bot
@@ -309,6 +309,21 @@ class ChunkSummarySchema(BaseModel):
     risks: list[str] = Field(default_factory=list)
     todos: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
+
+    @field_validator("highlights", "risks", "todos", "evidence", mode="before")
+    @classmethod
+    def parse_str_to_list(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            try:
+                import json
+
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [str(i) for i in parsed]
+            except Exception:
+                pass
+            return [v]
+        return v
 
 
 class GlobalOverviewSchema(BaseModel):
@@ -725,9 +740,8 @@ def run_grouped_summary_graph(
             except Exception as ex:
                 error_text = f"Summary出错，群:{group_id}，块#{chunk_index}，原因: {ex}"
                 print(error_text)
-                # 异步发送错误通知（适当调整调用地点和逻辑，确保事件循环正确）
-                asyncio.create_task(send_error_msg(error_text))
-                # 返回空的默认结果，防止跳过
+                # 注释掉异步发送：由于该任务在子线程中运行（无事件循环），不能直接调用 create_task。
+                # 此处将其作为结果的一部分返回，不会导致任务整体崩溃。
                 result = SummaryFinalResult(
                     date=datetime.now().strftime("%Y-%m-%d"),
                     overview="今日暂无可总结内容。",
