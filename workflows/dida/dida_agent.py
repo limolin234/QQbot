@@ -527,12 +527,14 @@ async def _execute_dida_agent_payload(payload: dict[str, str]) -> None:
             run_in_thread=True,
         )
         elapsed_ms = (perf_counter() - started) * 1000
+        intent_type = str(result.get("intent_type", "normal_conversation")).strip()
         log_event(
             stage="end",
             latency_ms=elapsed_ms,
             decision={
                 "should_reply": bool(result.get("should_reply", False)),
                 "reason": str(result.get("reason", "")),
+                "intent_type": intent_type,
                 "matched_rule": result.get("matched_rule"),
                 "trigger_mode": result.get("trigger_mode", ""),
                 "reply_length": len(str(result.get("reply_text", "") or "")),
@@ -776,6 +778,9 @@ class DidaAgentMessageContext:
 class DidaAgentAIDecision(BaseModel):
     should_reply: bool = Field(description="是否需要回复")
     reason: str = Field(default="", description="判定理由")
+    intent_type: Literal["normal_conversation", "task_management"] = Field(
+        default="normal_conversation", description="意图类型"
+    )
 
 
 class DidaAction(BaseModel):
@@ -831,6 +836,7 @@ class DidaAgentAIState(TypedDict):
     history_messages: list[str]
     should_reply: bool
     reason: str
+    intent_type: Literal["normal_conversation", "task_management"]
 
 
 class DidaAgentDecisionEngine:
@@ -900,6 +906,7 @@ class DidaAgentDecisionEngine:
             result = {
                 "should_reply": False,
                 "reason": "未命中启用规则",
+                "intent_type": "normal_conversation",
                 "matched_rule": None,
             }
             context_event(stage="decision_end", decision=result)
@@ -908,16 +915,23 @@ class DidaAgentDecisionEngine:
         failure_reasons: list[str] = []
         for idx, rule in enumerate(matching_rules):
             expression = str(rule.get("trigger_mode") or "always").strip()
-            ok, reason = self.evaluate_trigger_expression(expression, rule, context)
+            ok, reason, intent_type = self.evaluate_trigger_expression(
+                expression, rule, context
+            )
             context_event(
                 stage="rule_evaluated",
-                decision={"should_reply": ok, "reason": reason},
+                decision={
+                    "should_reply": ok,
+                    "reason": reason,
+                    "intent_type": intent_type,
+                },
                 extra={"rule_index": idx, "trigger_mode": expression},
             )
             if ok:
                 result = {
                     "should_reply": True,
                     "reason": reason,
+                    "intent_type": intent_type or "normal_conversation",
                     "matched_rule": idx,
                     "trigger_mode": expression,
                     "reply_prompt": str(rule.get("reply_prompt") or "").strip(),
@@ -930,6 +944,7 @@ class DidaAgentDecisionEngine:
         result = {
             "should_reply": False,
             "reason": "; ".join(failure_reasons) if failure_reasons else "规则未触发",
+            "intent_type": "normal_conversation",
             "matched_rule": None,
         }
         context_event(stage="decision_end", decision=result)
@@ -940,7 +955,7 @@ class DidaAgentDecisionEngine:
         expression: str,
         rule: dict[str, Any],
         context: DidaAgentMessageContext,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, str]:
         allowed_conditions = {
             "at_bot": lambda: self.condition_at_bot(context),
             "keyword": lambda: self.condition_keyword(rule, context),
@@ -952,14 +967,22 @@ class DidaAgentDecisionEngine:
         invalid_tokens = [token for token in tokens if token not in allowed_conditions]
         if invalid_tokens:
             invalid_text = ",".join(sorted(invalid_tokens))
-            return False, "trigger_mode 包含未知条件: " + invalid_text
+            return False, "trigger_mode 包含未知条件: " + invalid_text, ""
 
         condition_values: dict[str, bool] = {}
         condition_reasons: dict[str, str] = {}
+        condition_intent_types: dict[str, str] = {}
         for token in tokens:
-            value, reason = allowed_conditions[token]()
-            condition_values[token] = bool(value)
-            condition_reasons[token] = reason
+            cond_result = allowed_conditions[token]()
+            if token == "ai_decide":
+                value, reason, intent_type = cond_result
+                condition_values[token] = bool(value)
+                condition_reasons[token] = reason
+                condition_intent_types[token] = intent_type or "normal_conversation"
+            else:
+                value, reason = cond_result
+                condition_values[token] = bool(value)
+                condition_reasons[token] = reason
 
         py_expr = expression.replace("&&", " and ").replace("||", " or ")
         py_expr = re.sub(r"!\s*", " not ", py_expr)
@@ -967,10 +990,20 @@ class DidaAgentDecisionEngine:
         try:
             result = bool(eval(py_expr, {"__builtins__": {}}, condition_values))
         except Exception as error:
-            return False, f"trigger_mode 解析失败: {error}"
+            return False, f"trigger_mode 解析失败: {error}", ""
 
         if result:
-            return True, f"命中表达式: {expression}"
+            # 如果 ai_decide 在表达式中且为 True，使用其 intent_type
+            if "ai_decide" in condition_values and condition_values["ai_decide"]:
+                intent_type = condition_intent_types.get(
+                    "ai_decide", "normal_conversation"
+                )
+                # 校验 intent_type 值
+                valid_intents = {"normal_conversation", "task_management"}
+                if intent_type not in valid_intents:
+                    intent_type = "normal_conversation"
+                return True, f"命中表达式: {expression}", intent_type
+            return True, f"命中表达式: {expression}", ""
 
         reason_text = ", ".join(
             [f"{name}={condition_values[name]}" for name in sorted(condition_values)]
@@ -978,7 +1011,7 @@ class DidaAgentDecisionEngine:
         detail_text = "; ".join(
             [f"{name}:{condition_reasons[name]}" for name in sorted(condition_reasons)]
         )
-        return False, f"表达式未命中: {reason_text}; {detail_text}"
+        return False, f"表达式未命中: {reason_text}; {detail_text}", ""
 
     def condition_always(self) -> tuple[bool, str]:
         return True, "always=true"
@@ -1015,7 +1048,7 @@ class DidaAgentDecisionEngine:
 
     def condition_ai_decide(
         self, rule: dict[str, Any], context: DidaAgentMessageContext
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, str]:
         prompt = str(rule.get("ai_decision_prompt") or "").strip()
         if not prompt:
             return False, "缺少 ai_decision_prompt"
@@ -1072,10 +1105,15 @@ class DidaAgentDecisionEngine:
                     HumanMessage(content=json.dumps(llm_input, ensure_ascii=False)),
                 ]
             )
+            intent_type = str(result.intent_type or "normal_conversation").strip()
+            valid_intents = {"normal_conversation", "task_management"}
+            if intent_type not in valid_intents:
+                intent_type = "normal_conversation"
             return {
                 **state,
                 "should_reply": bool(result.should_reply),
                 "reason": str(result.reason or "").strip(),
+                "intent_type": intent_type,
             }
 
         graph = StateGraph(DidaAgentAIState)
@@ -1112,18 +1150,24 @@ class DidaAgentDecisionEngine:
                 "history_messages": context.history_messages,
                 "should_reply": False,
                 "reason": "",
+                "intent_type": "normal_conversation",
             }
         )
 
         should_reply = bool(final_state.get("should_reply", False))
         reason = str(final_state.get("reason", "")).strip()
+        intent_type = str(final_state.get("intent_type", "normal_conversation")).strip()
         context_event(
             stage="ai_decide_end",
-            decision={"should_reply": should_reply, "reason": reason},
+            decision={
+                "should_reply": should_reply,
+                "reason": reason,
+                "intent_type": intent_type,
+            },
         )
         if should_reply:
-            return True, reason or "ai_decide=true"
-        return False, reason or "ai_decide=false"
+            return True, reason or "ai_decide=true", intent_type
+        return False, reason or "ai_decide=false", intent_type
 
     def _load_task_context_data(
         self, context: DidaAgentMessageContext
@@ -1534,11 +1578,11 @@ def run_dida_agent_pipeline(
     )
 
     rule = result.get("rule") if isinstance(result.get("rule"), dict) else {}
-    action_prompt = str(rule.get("action_prompt", "")).strip()
-    is_new_mode = bool(action_prompt) and bool(rule.get("dida_enabled", False))
+    intent_type = str(result.get("intent_type", "normal_conversation")).strip()
 
-    if bool(result.get("should_reply", False)) and is_new_mode:
-        # Model A (Action LLM)
+    # 分支1: task_management → 完整流程（action → reply）
+    if bool(result.get("should_reply", False)) and intent_type == "task_management":
+        action_prompt = str(rule.get("action_prompt", "")).strip()
         try:
             print(f"[DIDA_DEBUG] generate_action start. run_id={run_id}")
             action_res = engine.generate_action(
@@ -1552,6 +1596,7 @@ def run_dida_agent_pipeline(
             return {
                 "should_reply": True,
                 "reason": str(result.get("reason", "")),
+                "intent_type": intent_type,
                 "matched_rule": result.get("matched_rule"),
                 "trigger_mode": result.get("trigger_mode", ""),
                 "is_new_mode": True,
@@ -1572,26 +1617,70 @@ def run_dida_agent_pipeline(
             return {
                 "should_reply": False,
                 "reason": f"action_error: {error}",
+                "intent_type": intent_type,
                 "chat_type": context.chat_type,
                 "group_id": context.group_id,
                 "user_id": context.user_id,
             }
 
-    if bool(result.get("should_reply", False)) and not is_new_mode:
-        return {
-            "should_reply": False,
-            "reason": "legacy_path_removed: dida_enabled/action_prompt 未满足",
-            "matched_rule": result.get("matched_rule"),
-            "trigger_mode": result.get("trigger_mode", ""),
-            "chat_type": context.chat_type,
-            "group_id": context.group_id,
-            "user_id": context.user_id,
-            "is_new_mode": False,
-        }
+    # 分支2: normal_conversation → 直接生成回复（用 normal_conversation_reply_prompt）
+    if bool(result.get("should_reply", False)) and intent_type == "normal_conversation":
+        normal_reply_prompt = str(
+            rule.get("normal_conversation_reply_prompt", "")
+        ).strip()
+        if not normal_reply_prompt:
+            return {
+                "should_reply": False,
+                "reason": "normal_conversation_reply_prompt 未配置",
+                "intent_type": intent_type,
+                "matched_rule": result.get("matched_rule"),
+                "trigger_mode": result.get("trigger_mode", ""),
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+                "is_new_mode": False,
+            }
+        try:
+            reply_res = engine.generate_final_reply(
+                reply_prompt=normal_reply_prompt,
+                context=context,
+                action_result=None,
+                execution_result=None,
+                rule=rule,
+            )
+            reply_text = reply_res.reply_text
+            return {
+                "should_reply": True,
+                "reason": str(result.get("reason", "")),
+                "intent_type": intent_type,
+                "matched_rule": result.get("matched_rule"),
+                "trigger_mode": result.get("trigger_mode", ""),
+                "reply_text": reply_text,
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+                "is_new_mode": False,
+            }
+        except Exception as error:
+            context_event(stage="reply_generate_error", error=str(error))
+            print(f"[DIDA_AGENT-ERROR] generate_reply failed: {error}")
+            import traceback
+
+            traceback.print_exc()
+            return {
+                "should_reply": False,
+                "reason": f"reply_error: {error}",
+                "intent_type": intent_type,
+                "chat_type": context.chat_type,
+                "group_id": context.group_id,
+                "user_id": context.user_id,
+                "is_new_mode": False,
+            }
 
     return {
         "should_reply": bool(result.get("should_reply", False)),
         "reason": str(result.get("reason", "")),
+        "intent_type": intent_type,
         "matched_rule": result.get("matched_rule"),
         "trigger_mode": result.get("trigger_mode", ""),
         "reply_text": "",
