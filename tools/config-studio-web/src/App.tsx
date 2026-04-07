@@ -44,6 +44,7 @@ type DidaRule = {
     ai_decision_prompt: string;
     action_prompt: string;
     reply_prompt: string;
+    normal_conversation_reply_prompt: string;
     action_temperature: number;
     reply_temperature: number;
 };
@@ -473,6 +474,7 @@ function makeDefaultDidaRule(): DidaRule {
         ai_decision_prompt: '',
         action_prompt: '',
         reply_prompt: '',
+        normal_conversation_reply_prompt: '',
         action_temperature: 0,
         reply_temperature: 0.5,
     };
@@ -1210,11 +1212,17 @@ function DidaRulesEditor({ rules, onChange }: { rules: DidaRule[]; onChange: (ne
                             value={promptRule.action_prompt}
                             onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { action_prompt: e.target.value })}
                         />
-                        <label>回复提示词</label>
+                        <label>回复提示词（任务管理）</label>
                         <textarea
                             rows={7}
                             value={promptRule.reply_prompt}
                             onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { reply_prompt: e.target.value })}
+                        />
+                        <label>闲聊回复提示词（普通对话）</label>
+                        <textarea
+                            rows={7}
+                            value={promptRule.normal_conversation_reply_prompt}
+                            onChange={(e) => editingPromptIdx !== null && updateRule(editingPromptIdx, { normal_conversation_reply_prompt: e.target.value })}
                         />
                     </div>
                 ) : (
@@ -2254,6 +2262,7 @@ export default function App() {
             ai_decision_prompt: toStringValue(obj.ai_decision_prompt),
             action_prompt: toStringValue(obj.action_prompt),
             reply_prompt: toStringValue(obj.reply_prompt),
+            normal_conversation_reply_prompt: toStringValue(obj.normal_conversation_reply_prompt),
             action_temperature: toNumber(obj.action_temperature, 0),
             reply_temperature: toNumber(obj.reply_temperature, 0.5),
         };

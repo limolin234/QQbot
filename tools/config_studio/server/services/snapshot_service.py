@@ -18,7 +18,8 @@ class SnapshotService:
             return
 
         rel_path = target_file.relative_to(self.repo_root)
-        safe_rel = str(rel_path).replace("/", "__")
+        # Replace both forward and back slashes to get a valid filename on all OSes
+        safe_rel = str(rel_path).replace("/", "__").replace("\\", "__")
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dst = self.snapshot_root / f"{safe_rel}__{ts}.bak"
         shutil.copy2(target_file, dst)
