@@ -1337,6 +1337,7 @@ class DidaAgentDecisionEngine:
                 "raw_message": context.raw_message,
                 "cleaned_message": context.cleaned_message,
             },
+            "history_messages": context.history_messages,
             "actions": action_summary,
             "action_count": len(action_summary),
             "execution": execution_result
