@@ -806,14 +806,16 @@ class DidaScheduler:
 
             due_raw = task.get("dueDate")
             if not due_raw:
-                # If day_range is 'all', include no-date tasks?
-                # For now, let's say 'all' includes everything, but 'today'/'overdue' requires date.
-                if day_range == "all":
+                # 无截止日期的任务，在 today/overdue/all 模式下都包含
+                # 这样早/晚推送不会遗漏未设日期的待办
+                if day_range in ("today", "overdue", "all"):
                     filtered_tasks.append(task)
                 continue
 
             dt = _parse_dida_datetime(due_raw)
             if not dt:
+                if day_range in ("today", "overdue", "all"):
+                    filtered_tasks.append(task)
                 continue
 
             dt_local = dt.astimezone()
